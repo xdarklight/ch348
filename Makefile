@@ -1,0 +1,1 @@
+obj-$(CONFIG_USB_SERIAL_CH348)			+= ch348.o 
