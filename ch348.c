@@ -147,7 +147,8 @@ struct ch348_magic {
 } __packed;
 
 struct ch348_status_entry {
-	u8 portnum;
+	u8 portnum:4;
+	u8 unused:4;
 	u8 reg_iir;
 	union {
 		u8 lsr_signal;
@@ -159,10 +160,10 @@ struct ch348_status_entry {
 static void ch348_process_status_urb(struct urb *urb)
 {
 	struct ch348_status_entry *status_entry;
-	unsigned int i, status_len,  portnum;
 	struct ch348 *ch348 = urb->context;
-	struct usb_serial_port *port;
 	int ret, status = urb->status;
+	struct usb_serial_port *port;
+	unsigned int i, status_len;
 
 	switch (status) {
 	case 0:
@@ -190,15 +191,15 @@ static void ch348_process_status_urb(struct urb *urb)
 
 	for (i = 0; i < urb->actual_length;) {
 		status_entry = urb->transfer_buffer + i;
-		portnum = status_entry->portnum & 0x0f;
 
-		if (portnum >= CH348_MAXPORT) {
+		if (status_entry->portnum >= CH348_MAXPORT) {
 			dev_warn(&ch348->udev->dev,
-				 "Invalid port %d in status entry\n", portnum);
+				 "Invalid port %d in status entry\n",
+				 status_entry->portnum);
 			break;
 		}
 
-		port = ch348->serial->port[portnum];
+		port = ch348->serial->port[status_entry->portnum];
 		status_len = 3;
 
 		if (!status_entry->reg_iir) {
@@ -215,7 +216,7 @@ static void ch348_process_status_urb(struct urb *urb)
 			if (status_entry->lsr_signal & CH348_LF)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
-			complete(&ch348->ports[portnum].write_completion);
+			complete(&ch348->ports[status_entry->portnum].write_completion);
 		} else {
 			dev_warn(&port->dev,
 				 "Unsupported status with reg_iir 0x%02x\n",
@@ -357,7 +358,7 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static void ch348_generic_write_start(struct urb *urb)
+static void ch348_write_bulk_callback(struct urb *urb)
 {
 	struct usb_serial_port *port = urb->context;
 	int status = urb->status;
@@ -399,21 +400,6 @@ static void ch348_generic_write_start(struct urb *urb)
 	 */
 	//usb_serial_generic_write_start(port, GFP_ATOMIC);
 	usb_serial_port_softint(port);
-}
-
-static void ch348_write_bulk_callback(struct urb *urb)
-{
-	struct usb_serial_port *port = urb->context;
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-
-	ch348_generic_write_start(urb);
-
-	if (urb->status)
-		/*
-		 * Writing the buffer has failed. We don't need to wait for the
-		 * hardware to drain the buffer.
-		 */
-		complete(&ch348->ports[port->port_number].write_completion);
 }
 
 static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 index, u8 mode)
