@@ -10,6 +10,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/overflow.h>
 #include <linux/serial.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
@@ -17,6 +18,7 @@
 #include <linux/tty_flip.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
+#include <linux/wait.h>
 
 #define DEFAULT_BAUD_RATE 9600
 #define CH348_CMD_TIMEOUT   2000
@@ -120,7 +122,6 @@ struct ch348_port {
  * @udev:		pointer to the CH348 USB device
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
- * @status_ep:		endpoint number for status operations
  * @cmd_ep:		endpoint number for configure operations
  * @status_urb:		URB for status
  * @status_buffer:	buffer used by status_urb
@@ -130,11 +131,13 @@ struct ch348 {
 	struct ch348_port ports[CH348_MAXPORT];
 	struct usb_serial *serial;
 
-	int status_ep;
 	int cmd_ep;
 
+	bool tx_buffer_empty;
+	wait_queue_head_t wait_tx_buffer_empty;
+
 	struct urb *status_urb;
-	u8 *status_buffer;
+	u8 status_buffer[];
 };
 
 struct ch348_magic {
@@ -142,6 +145,96 @@ struct ch348_magic {
 	u8 reg;
 	u8 control;
 } __packed;
+
+struct ch348_status_entry {
+	u8 portnum;
+	u8 reg_iir;
+	union {
+		u8 lsr_signal;
+		u8 modem_signal;
+		u8 init_data[10];
+	};
+} __packed;
+
+static void ch348_process_status_urb(struct urb *urb)
+{
+	struct ch348_status_entry *status_entry;
+	unsigned int i, status_len,  portnum;
+	struct ch348 *ch348 = urb->context;
+	struct usb_serial_port *port;
+	int ret, status = urb->status;
+
+	switch (status) {
+	case 0:
+		/* success */
+		break;
+	case -ECONNRESET:
+	case -ENOENT:
+	case -ESHUTDOWN:
+		/* this urb is terminated, clean up */
+		dev_dbg(&urb->dev->dev, "%s - urb shutting down with status: %d\n",
+			__func__, status);
+		return;
+	default:
+		dev_err(&urb->dev->dev, "%s - nonzero urb status received: %d\n",
+			__func__, status);
+		goto exit;
+	}
+
+	if (urb->actual_length < 3) {
+		dev_warn(&ch348->udev->dev,
+			 "Received too short status buffer with %u bytes\n",
+			 urb->actual_length);
+		goto exit;
+	}
+
+	for (i = 0; i < urb->actual_length;) {
+		status_entry = urb->transfer_buffer + i;
+		portnum = status_entry->portnum & 0x0f;
+
+		if (portnum >= CH348_MAXPORT) {
+			dev_warn(&ch348->udev->dev,
+				 "Invalid port %d in status entry\n", portnum);
+			break;
+		}
+
+		port = ch348->serial->port[portnum];
+		status_len = 3;
+
+		if (!status_entry->reg_iir) {
+			dev_dbg(&port->dev, "Ignoring status with zero reg_iir\n");
+		} else if (status_entry->reg_iir == R_INIT) {
+			status_len = 12;
+		} else if ((status_entry->reg_iir & 0x0f) == R_II_B1) {
+			if (status_entry->lsr_signal & CH348_LO)
+				port->icount.overrun++;
+			if (status_entry->lsr_signal & CH348_LP)
+				port->icount.parity++;
+			if (status_entry->lsr_signal & CH348_LF)
+				port->icount.frame++;
+			if (status_entry->lsr_signal & CH348_LF)
+				port->icount.brk++;
+		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
+			ch348->tx_buffer_empty = true;
+			wake_up(&ch348->wait_tx_buffer_empty);
+		} else {
+			dev_warn(&port->dev,
+				 "Unsupported status with reg_iir 0x%02x\n",
+				 status_entry->reg_iir);
+		}
+
+		usb_serial_debug_data(&port->dev, __func__, status_len,
+				      urb->transfer_buffer + i);
+
+		i += status_len;
+	}
+
+exit:
+	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	if (ret)
+		dev_err(&urb->dev->dev, "%s - usb_submit_urb failed; %d\n",
+			__func__, ret);
+}
 
 /*
  * Some values came from vendor tree, and we have no meaning for them, this
@@ -239,6 +332,37 @@ static int ch348_prepare_write_buffer(struct usb_serial_port *port, void *dest, 
 	rxt->length = cpu_to_le16(count);
 
 	return count + CH348_TX_HDRSIZE;
+}
+
+static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
+		       const unsigned char *buf, int count)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+
+	wait_event_timeout(ch348->wait_tx_buffer_empty, ch348->tx_buffer_empty,
+			   msecs_to_jiffies(CH348_CMD_TIMEOUT));
+
+	ch348->tx_buffer_empty = false;
+
+	return usb_serial_generic_write(tty, port, buf, count);
+}
+
+static void ch348_write_bulk_callback(struct urb *urb)
+{
+	struct usb_serial_port *port = urb->context;
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+
+	if (!urb->status)
+		/*
+		 * Writing the buffer has failed. We don't need to wait for the
+		 * hardware to drain the buffer.
+		 */
+		ch348->tx_buffer_empty = true;
+
+	wait_event_timeout(ch348->wait_tx_buffer_empty, ch348->tx_buffer_empty,
+			   msecs_to_jiffies(CH348_CMD_TIMEOUT));
+
+	usb_serial_generic_write_bulk_callback(urb);
 }
 
 static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 index, u8 mode)
@@ -367,23 +491,23 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	return usb_serial_generic_open(tty, port);
 }
 
-static void ch348_disconnect(struct usb_serial *serial)
-{
-	struct ch348 *ch348 = usb_get_serial_data(serial);
-
-	usb_kill_urb(ch348->status_urb);
-}
-
 static int ch348_attach(struct usb_serial *serial)
 {
+	struct usb_endpoint_descriptor *epcmd, *epstatus;
 	struct usb_serial_port *port0 = serial->port[1];
 	struct usb_device *usb_dev = serial->dev;
-	struct usb_endpoint_descriptor *epcmd;
+	int status_buffer_size, ret;
 	struct usb_interface *intf;
 	struct ch348 *ch348;
-	int ret;
 
-	ch348 = kzalloc(sizeof(*ch348), GFP_KERNEL);
+	intf = usb_ifnum_to_if(usb_dev, 0);
+	epstatus = &intf->cur_altsetting->endpoint[2].desc;
+	epcmd = &intf->cur_altsetting->endpoint[3].desc;
+
+	status_buffer_size = usb_endpoint_maxp(epstatus);
+
+	ch348 = kzalloc(struct_size(ch348, status_buffer, status_buffer_size),
+			GFP_KERNEL);
 	if (!ch348)
 		return -ENOMEM;
 
@@ -391,24 +515,51 @@ static int ch348_attach(struct usb_serial *serial)
 
 	ch348->udev = serial->dev;
 	ch348->serial = serial;
+	ch348->tx_buffer_empty = true;
+	init_waitqueue_head(&ch348->wait_tx_buffer_empty);
 
-	intf = usb_ifnum_to_if(usb_dev, 0);
-	epcmd = &intf->cur_altsetting->endpoint[3].desc;
+	ch348->status_urb = usb_alloc_urb(0, GFP_KERNEL);
+	if (!ch348->status_urb) {
+		ret = -ENOMEM;
+		goto err_free_ch348;
+	}
+
+	usb_fill_bulk_urb(ch348->status_urb, ch348->udev,
+			  usb_rcvbulkpipe(ch348->udev, epstatus->bEndpointAddress),
+			  ch348->status_buffer, status_buffer_size,
+			  ch348_process_status_urb, ch348);
+
+	ret = usb_submit_urb(ch348->status_urb, GFP_KERNEL);
+	if (ret) {
+		dev_err(&ch348->udev->dev,
+			"%s - failed to submit status/interrupt urb %i\n",
+			__func__, ret);
+		goto err_free_status_urb;
+	}
+
 	ret = usb_serial_generic_submit_read_urbs(port0, GFP_KERNEL);
 	if (ret)
-		return ret;
+		goto err_kill_status_urb;
 
 	ch348->cmd_ep = usb_sndbulkpipe(usb_dev, epcmd->bEndpointAddress);
 
 	return 0;
+
+err_kill_status_urb:
+	usb_kill_urb(ch348->status_urb);
+err_free_status_urb:
+	usb_free_urb(ch348->status_urb);
+err_free_ch348:
+	kfree(ch348);
+	return ret;
 }
 
 static void ch348_release(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
-	struct usb_serial_port *port0 = serial->port[1];
 
-	usb_serial_generic_close(port0);
+	usb_kill_urb(ch348->status_urb);
+	usb_free_urb(ch348->status_urb);
 
 	kfree(ch348);
 }
@@ -437,10 +588,8 @@ static void ch348_print_version(struct usb_serial *serial)
 
 static int ch348_probe(struct usb_serial *serial, const struct usb_device_id *id)
 {
+	struct usb_endpoint_descriptor *epread, *epwrite, *epstatus, *epcmd;
 	struct usb_device *usb_dev = serial->dev;
-	struct usb_endpoint_descriptor *epcmd;
-	struct usb_endpoint_descriptor *epread;
-	struct usb_endpoint_descriptor *epwrite;
 	struct usb_interface *intf;
 	int ret;
 
@@ -452,10 +601,16 @@ static int ch348_probe(struct usb_serial *serial, const struct usb_device_id *id
 		dev_err(&serial->dev->dev, "Failed to find basic endpoints ret=%d\n", ret);
 		return ret;
 	}
-	epcmd = &intf->cur_altsetting->endpoint[3].desc;
 
+	epstatus = &intf->cur_altsetting->endpoint[2].desc;
+	if (!usb_endpoint_is_bulk_in(epstatus)) {
+		dev_err(&serial->dev->dev, "Missing second bulk in (STATUS/INT)\n");
+		return -ENODEV;
+	}
+
+	epcmd = &intf->cur_altsetting->endpoint[3].desc;
 	if (!usb_endpoint_is_bulk_out(epcmd)) {
-		dev_err(&serial->dev->dev, "Missing second bulk out\n");
+		dev_err(&serial->dev->dev, "Missing second bulk out (CMD)\n");
 		return -ENODEV;
 	}
 
@@ -473,10 +628,40 @@ static int ch348_calc_num_ports(struct usb_serial *serial,
 		epds->bulk_out[i] = epds->bulk_out[0];
 		epds->bulk_in[i] = epds->bulk_in[0];
 	}
+
 	epds->num_bulk_out = CH348_MAXPORT;
 	epds->num_bulk_in = CH348_MAXPORT;
 
 	return CH348_MAXPORT;
+}
+
+static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+
+	usb_kill_urb(ch348->status_urb);
+
+	return 0;
+}
+
+static int ch348_resume(struct usb_serial *serial)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	int ret;
+
+	ret = usb_submit_urb(ch348->status_urb, GFP_KERNEL);
+	if (ret) {
+		dev_err(&ch348->udev->dev,
+			"%s - failed to submit status/interrupt urb %i\n",
+			__func__, ret);
+		return ret;
+	}
+
+	ret = usb_serial_generic_resume(serial);
+	if (ret)
+		usb_kill_urb(ch348->status_urb);
+
+	return ret;
 }
 
 static const struct usb_device_id ch348_ids[] = {
@@ -499,11 +684,14 @@ static struct usb_serial_driver ch348_device = {
 	.set_termios =		ch348_set_termios,
 	.process_read_urb =	ch348_process_read_urb,
 	.prepare_write_buffer =	ch348_prepare_write_buffer,
+	.write =		ch348_write,
+	.write_bulk_callback =	ch348_write_bulk_callback,
 	.probe =		ch348_probe,
 	.calc_num_ports =	ch348_calc_num_ports,
 	.attach =		ch348_attach,
 	.release =		ch348_release,
-	.disconnect =		ch348_disconnect,
+	.suspend =		ch348_suspend,
+	.resume =		ch348_resume,
 };
 
 static struct usb_serial_driver * const serial_drivers[] = {
