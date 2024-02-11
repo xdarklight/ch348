@@ -59,6 +59,8 @@
 #define R_II_B2		0x02
 #define R_II_B3		0x00
 
+#define CMD_VER		0x96
+
 #define CH348_RX_PORT_CHUNK_LENGTH	32
 #define CH348_RX_PORT_MAX_LENGTH	30
 
@@ -411,6 +413,28 @@ static void ch348_release(struct usb_serial *serial)
 	kfree(ch348);
 }
 
+static void ch348_print_version(struct usb_serial *serial)
+{
+	u8 *version_buf;
+	int ret;
+
+	version_buf = kzalloc(4, GFP_KERNEL);
+	if (!version_buf)
+		return;
+
+	ret = usb_control_msg(serial->dev, usb_rcvctrlpipe(serial->dev, 0),
+			      CMD_VER,
+			      USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_IN,
+			      0, 0, version_buf, 4, CH348_CMD_TIMEOUT);
+	if (ret < 0)
+		dev_dbg(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
+	else
+		dev_info(&serial->dev->dev, "Found WCH CH348%s\n",
+			 (version_buf[1] & 0x80) ? "Q" : "L");
+
+	kfree(version_buf);
+}
+
 static int ch348_probe(struct usb_serial *serial, const struct usb_device_id *id)
 {
 	struct usb_device *usb_dev = serial->dev;
@@ -434,6 +458,8 @@ static int ch348_probe(struct usb_serial *serial, const struct usb_device_id *id
 		dev_err(&serial->dev->dev, "Missing second bulk out\n");
 		return -ENODEV;
 	}
+
+	ch348_print_version(serial);
 
 	return 0;
 }
