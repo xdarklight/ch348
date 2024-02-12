@@ -488,7 +488,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	else if (format == 1)
 		buffer->format = 0x00;
 
-	buffer->rate = max_t(speed_t, 5, DIV_ROUND_CLOSEST(10000 * 15, baudrate));
+	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
 	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer,
 			   sizeof(*buffer), &sent, CH348_CMD_TIMEOUT);
