@@ -445,9 +445,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	/*
 	 * The datasheet states that only baud rates in range of 1200..6000000
 	 * are supported. Tests however show that even baud rates as low as 50
-	 * are working in practice.
+	 * and as high as 12000000 are working in practice.
 	 */
-	baudrate = clamp(tty_get_baud_rate(tty), 50, 6000000);
+	baudrate = clamp(tty_get_baud_rate(tty), 50, 12000000);
 
 	format = termios->c_cflag & CSTOPB ? 2 : 1;
 
