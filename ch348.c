@@ -282,24 +282,19 @@ static void ch348_process_read_urb(struct urb *urb)
 {
 	struct usb_serial_port *port = urb->context;
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	unsigned int portnum, usblen;
+	unsigned int portnum, usblen, i;
 	struct ch348_rxbuf *rxb;
-	u8 *buffer, *end;
-
-	buffer = urb->transfer_buffer;
 
 	if (urb->actual_length < 2) {
-		dev_dbg(&port->dev, "Empty rx buffer\n");
+		dev_dbg(&ch348->udev->dev, "Empty rx buffer\n");
 		return;
 	}
 
-	end = buffer + urb->actual_length;
-
-	for (; buffer < end; buffer += CH348_RX_PORT_CHUNK_LENGTH) {
-		rxb = (struct ch348_rxbuf *)buffer;
+	for (i = 0; i < urb->actual_length; i += CH348_RX_PORT_CHUNK_LENGTH) {
+		rxb = urb->transfer_buffer + i;
 		portnum = rxb->port;
 		if (portnum >= CH348_MAXPORT) {
-			dev_dbg(&port->dev, "Invalid port %d\n", portnum);
+			dev_dbg(&ch348->udev->dev, "Invalid port %d\n", portnum);
 			break;
 		}
 
