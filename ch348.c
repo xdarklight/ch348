@@ -6,7 +6,6 @@
  * With the help of Neil Armstrong <neil.armstrong@linaro.org>
  */
 
-#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -19,6 +18,7 @@
 #include <linux/tty_flip.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
+#include <linux/wait.h>
 
 #define CH348_CMD_TIMEOUT   2000
 
@@ -111,12 +111,13 @@ struct ch348_initbuf {
 /*
  * struct ch348_port - per-port information
  * @uartmode:		UART port current mode
- * @write_completion:	Completes whenever the status handler signals
- * 			that the write buffer has been emptied.
+ * @write_empty:	Indicates that the TX buffer has been written out
+ * @wait_write_empty:	Wait queue for write_empty
  */
 struct ch348_port {
 	u8 uartmode;
-	struct completion write_completion;
+	bool write_empty;
+	wait_queue_head_t wait_write_empty;
 };
 
 /*
@@ -215,7 +216,8 @@ static void ch348_process_status_urb(struct urb *urb)
 			if (status_entry->lsr_signal & CH348_LF)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
-			complete(&ch348->ports[status_entry->portnum].write_completion);
+			ch348->ports[status_entry->portnum].write_empty = true;
+			wake_up(&ch348->ports[status_entry->portnum].wait_write_empty);
 		} else {
 			dev_warn(&port->dev,
 				 "Unsupported status with reg_iir 0x%02x\n",
@@ -333,67 +335,23 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	struct ch348_port *ch348_port = &ch348->ports[port->port_number];
-	int ret;
+	int ret, max_tx_size;
 
-	if (!count)
-		return 0;
+	ch348_port->write_empty = false;
 
-	count = kfifo_in_locked(&port->write_fifo, buf, count, &port->lock);
+	max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
 
-	while (!kfifo_is_empty(&port->write_fifo)) {
-		ret = usb_serial_generic_write_start(port, GFP_ATOMIC);
-		if (ret)
-			return ret;
+	ret = usb_serial_generic_write(tty, port, buf, min(count, max_tx_size));
+	if (ret <= 0)
+		return ret;
 
-		wait_for_completion_timeout(&ch348_port->write_completion,
-					    msecs_to_jiffies(CH348_CMD_TIMEOUT));
+	if (!wait_event_timeout(ch348_port->wait_write_empty,
+				ch348_port->write_empty, CH348_CMD_TIMEOUT)) {
+		dev_err_console(port, "Failed to wait for TX buffer flush\n");
+		return -ETIMEDOUT;
 	}
 
-	return count;
-}
-
-static void ch348_write_bulk_callback(struct urb *urb)
-{
-	struct usb_serial_port *port = urb->context;
-	int status = urb->status;
-	unsigned long flags;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(port->write_urbs); ++i) {
-		if (port->write_urbs[i] == urb)
-			break;
-	}
-	spin_lock_irqsave(&port->lock, flags);
-	port->tx_bytes -= urb->transfer_buffer_length;
-	set_bit(i, &port->write_urbs_free);
-	spin_unlock_irqrestore(&port->lock, flags);
-
-	switch (status) {
-	case 0:
-		break;
-	case -ENOENT:
-	case -ECONNRESET:
-	case -ESHUTDOWN:
-		dev_dbg(&port->dev, "%s - urb stopped: %d\n", __func__,
-			status);
-		return;
-	case -EPIPE:
-		dev_err_console(port, "%s - urb stopped: %d\n", __func__,
-				status);
-		return;
-	default:
-		dev_err_console(port, "%s - nonzero urb status: %d\n",
-				__func__, status);
-		break;
-	}
-
-	/*
-	 * TODO: maybe we can make this more generic - the whole function
-	 * is a copy of usb_serial_generic_write_bulk_callback() with the
-	 * call to usb_serial_generic_write_start() commented.
-	 */
-	//usb_serial_generic_write_start(port, GFP_ATOMIC);
-	usb_serial_port_softint(port);
+	return ret;
 }
 
 static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 index, u8 mode)
@@ -547,7 +505,7 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->serial = serial;
 
 	for (i = 0; i < CH348_MAXPORT; i++)
-		init_completion(&ch348->ports[i].write_completion);
+		init_waitqueue_head(&ch348->ports[i].wait_write_empty);
 
 	ch348->status_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!ch348->status_urb) {
@@ -710,13 +668,12 @@ static struct usb_serial_driver ch348_device = {
 	.id_table =		ch348_ids,
 	.num_ports =		CH348_MAXPORT,
 	.num_bulk_in =		1,
-	.num_bulk_out =		2,
+	.num_bulk_out =		1,
 	.open =			ch348_open,
 	.set_termios =		ch348_set_termios,
 	.process_read_urb =	ch348_process_read_urb,
 	.prepare_write_buffer =	ch348_prepare_write_buffer,
 	.write =		ch348_write,
-	.write_bulk_callback =	ch348_write_bulk_callback,
 	.probe =		ch348_probe,
 	.calc_num_ports =	ch348_calc_num_ports,
 	.attach =		ch348_attach,
