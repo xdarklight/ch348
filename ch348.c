@@ -20,7 +20,6 @@
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
 
-#define DEFAULT_BAUD_RATE 9600
 #define CH348_CMD_TIMEOUT   2000
 
 #define CH348_CTO_D	0x01
@@ -443,13 +442,12 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		return;
 	}
 
-	baudrate = tty_get_baud_rate(tty);
-	/* test show no success on low baud and datasheet said it is not supported */
-	if (baudrate < 1200)
-		baudrate = DEFAULT_BAUD_RATE;
-	/* datasheet said it is not supported */
-	if (baudrate > 6000000)
-		baudrate = 6000000;
+	/*
+	 * The datasheet states that only baud rates in range of 1200..6000000
+	 * are supported. Tests however show that even baud rates as low as 50
+	 * are working in practice.
+	 */
+	baudrate = clamp(tty_get_baud_rate(tty), 50, 6000000);
 
 	format = termios->c_cflag & CSTOPB ? 2 : 1;
 
