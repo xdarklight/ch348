@@ -106,6 +106,8 @@ struct ch348_initbuf {
  * the USB serial port structure with the correct USB endpoint
  * for read and write, and write proper process_read_urb()
  * and prepare_write_buffer() to correctly (de-)multiplex data.
+ * Also we use a custom write() implementation to wait until the buffer
+ * has been fully transmitted to prevent TX buffer overruns.
  */
 
 /*
@@ -339,6 +341,16 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 
 	ch348_port->write_empty = false;
 
+	/*
+	 * Only ingest as many bytes as we can transfer with one URB at a time.
+	 * Once an URB has been written we need to wait for the R_II_B2 status
+	 * event before we are allowed to send more data. If we ingest more
+	 * data then usb_serial_generic_write() will internally try to process
+	 * as much data as possible with any number of URBs without giving us
+	 * the chance to wait in between transfers. For any bytes that we did
+	 * not transfer TTY core will call us again, with the buffer and count
+	 * adjusted to the remaining data.
+	 */
 	max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
 
 	ret = usb_serial_generic_write(tty, port, buf, min(count, max_tx_size));
@@ -655,7 +667,7 @@ static int ch348_resume(struct usb_serial *serial)
 
 static const struct usb_device_id ch348_ids[] = {
 	{ USB_DEVICE(0x1a86, 0x55d9), },
-	{ }
+	{ /* sentinel */ }
 };
 
 MODULE_DEVICE_TABLE(usb, ch348_ids);
