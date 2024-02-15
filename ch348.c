@@ -456,8 +456,8 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer,
 			   sizeof(*buffer), &sent, CH348_CMD_TIMEOUT);
 	if (ret < 0) {
-		dev_err_console(port, "Failed to change line settings: err=%d\n",
-				ret);
+		dev_err(&ch348->udev->dev, "Failed to change line settings: err=%d\n",
+			ret);
 		goto out;
 	}
 
@@ -484,7 +484,7 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_configure(ch348, port->port_number);
 	if (ret) {
-		dev_err_console(port, "Fail to configure err=%d\n", ret);
+		dev_err(&ch348->udev->dev, "Fail to configure err=%d\n", ret);
 		return ret;
 	}
 
