@@ -366,7 +366,7 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return ret;
 }
 
-static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 index, u8 mode)
+static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 mode)
 {
 	int ret;
 
@@ -466,9 +466,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		goto out;
 
 	if (C_CRTSCTS(tty))
-		ret = ch348_set_uartmode(ch348, portnum, portnum, M_HF);
+		ret = ch348_set_uartmode(ch348, portnum, M_HF);
 	else
-		ret = ch348_set_uartmode(ch348, portnum, portnum, M_NOR);
+		ret = ch348_set_uartmode(ch348, portnum, M_NOR);
 
 out:
 	kfree(buffer);
