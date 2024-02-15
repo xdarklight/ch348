@@ -390,12 +390,11 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 			      const struct ktermios *termios_old)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	int portnum = port->port_number;
 	struct ktermios *termios = &tty->termios;
-	int ret, sent;
+	int ret, portnum = port->port_number;
+	struct ch348_initbuf *buffer;
 	speed_t	baudrate;
 	u8 format;
-	struct ch348_initbuf *buffer;
 
 	if (termios_old && !tty_termios_hw_change(&tty->termios, termios_old))
 		return;
@@ -454,7 +453,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
 	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer,
-			   sizeof(*buffer), &sent, CH348_CMD_TIMEOUT);
+			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
 	if (ret < 0) {
 		dev_err(&ch348->udev->dev, "Failed to change line settings: err=%d\n",
 			ret);
