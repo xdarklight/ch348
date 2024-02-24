@@ -163,6 +163,7 @@ static void ch348_process_status_urb(struct urb *urb)
 {
 	struct ch348_status_entry *status_entry;
 	struct ch348 *ch348 = urb->context;
+	struct ch348_port *ch348_port;
 	int ret, status = urb->status;
 	struct usb_serial_port *port;
 	unsigned int i, status_len;
@@ -202,6 +203,7 @@ static void ch348_process_status_urb(struct urb *urb)
 		}
 
 		port = ch348->serial->port[status_entry->portnum];
+		ch348_port = &ch348->ports[status_entry->portnum];
 		status_len = 3;
 
 		if (!status_entry->reg_iir) {
@@ -218,8 +220,8 @@ static void ch348_process_status_urb(struct urb *urb)
 			if (status_entry->lsr_signal & CH348_LF)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
-			ch348->ports[status_entry->portnum].write_empty = true;
-			wake_up(&ch348->ports[status_entry->portnum].wait_write_empty);
+			ch348_port->write_empty = true;
+			wake_up_interruptible(&ch348_port->wait_write_empty);
 		} else {
 			dev_warn(&port->dev,
 				 "Unsupported status with reg_iir 0x%02x\n",
@@ -357,8 +359,9 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	if (ret <= 0)
 		return ret;
 
-	if (!wait_event_timeout(ch348_port->wait_write_empty,
-				ch348_port->write_empty, CH348_CMD_TIMEOUT)) {
+	if (!wait_event_interruptible_timeout(ch348_port->wait_write_empty,
+					      ch348_port->write_empty,
+					      CH348_CMD_TIMEOUT)) {
 		dev_err_console(port, "Failed to wait for TX buffer flush\n");
 		return -ETIMEDOUT;
 	}
