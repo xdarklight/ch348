@@ -6,6 +6,7 @@
  * With the help of Neil Armstrong <neil.armstrong@linaro.org>
  */
 
+#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -18,7 +19,6 @@
 #include <linux/tty_flip.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
-#include <linux/wait.h>
 
 #define CH348_CMD_TIMEOUT   2000
 
@@ -113,13 +113,11 @@ struct ch348_initbuf {
 /*
  * struct ch348_port - per-port information
  * @uartmode:		UART port current mode
- * @write_empty:	Indicates that the TX buffer has been written out
- * @wait_write_empty:	Wait queue for write_empty
+ * @write_completion:	completion event when the TX buffer has been written out
  */
 struct ch348_port {
 	u8 uartmode;
-	bool write_empty;
-	wait_queue_head_t wait_write_empty;
+	struct completion write_completion;
 };
 
 /*
@@ -218,8 +216,7 @@ static void ch348_process_status_urb(struct urb *urb)
 			if (status_entry->lsr_signal & CH348_LF)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
-			ch348->ports[status_entry->portnum].write_empty = true;
-			wake_up(&ch348->ports[status_entry->portnum].wait_write_empty);
+			complete_all(&ch348->ports[status_entry->portnum].write_completion);
 		} else {
 			dev_warn(&port->dev,
 				 "Unsupported status with reg_iir 0x%02x\n",
@@ -339,8 +336,6 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	struct ch348_port *ch348_port = &ch348->ports[port->port_number];
 	int ret, max_tx_size;
 
-	ch348_port->write_empty = false;
-
 	/*
 	 * Only ingest as many bytes as we can transfer with one URB at a time.
 	 * Once an URB has been written we need to wait for the R_II_B2 status
@@ -353,12 +348,14 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	 */
 	max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
 
+	reinit_completion(&ch348_port->write_completion);
+
 	ret = usb_serial_generic_write(tty, port, buf, min(count, max_tx_size));
 	if (ret <= 0)
 		return ret;
 
-	if (!wait_event_timeout(ch348_port->wait_write_empty,
-				ch348_port->write_empty, CH348_CMD_TIMEOUT)) {
+	if (!wait_for_completion_interruptible_timeout(&ch348_port->write_completion,
+						       msecs_to_jiffies(CH348_CMD_TIMEOUT))) {
 		dev_err_console(port, "Failed to wait for TX buffer flush\n");
 		return -ETIMEDOUT;
 	}
@@ -516,7 +513,7 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->serial = serial;
 
 	for (i = 0; i < CH348_MAXPORT; i++)
-		init_waitqueue_head(&ch348->ports[i].wait_write_empty);
+		init_completion(&ch348->ports[i].write_completion);
 
 	ch348->status_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!ch348->status_urb) {
