@@ -11,6 +11,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/serial.h>
 #include <linux/slab.h>
@@ -125,6 +126,7 @@ struct ch348_port {
  * @udev:		pointer to the CH348 USB device
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
+ * @write_lock:		protect against concurrent writes so we don't lose data
  * @cmd_ep:		endpoint number for configure operations
  * @status_urb:		URB for status
  * @status_buffer:	buffer used by status_urb
@@ -133,6 +135,8 @@ struct ch348 {
 	struct usb_device *udev;
 	struct ch348_port ports[CH348_MAXPORT];
 	struct usb_serial *serial;
+
+	struct mutex write_lock;
 
 	int cmd_ep;
 
@@ -350,7 +354,10 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 
 	reinit_completion(&ch348_port->write_completion);
 
+	mutex_lock(&ch348->write_lock);
 	ret = usb_serial_generic_write(tty, port, buf, min(count, max_tx_size));
+	mutex_unlock(&ch348->write_lock);
+
 	if (ret <= 0)
 		return ret;
 
@@ -511,6 +518,7 @@ static int ch348_attach(struct usb_serial *serial)
 
 	ch348->udev = serial->dev;
 	ch348->serial = serial;
+	mutex_init(&ch348->write_lock);
 
 	for (i = 0; i < CH348_MAXPORT; i++)
 		init_completion(&ch348->ports[i].write_completion);
