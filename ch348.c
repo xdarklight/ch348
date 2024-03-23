@@ -340,22 +340,37 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	struct ch348_port *ch348_port = &ch348->ports[port->port_number];
 	int ret, max_tx_size;
 
-	/*
-	 * Only ingest as many bytes as we can transfer with one URB at a time.
-	 * Once an URB has been written we need to wait for the R_II_B2 status
-	 * event before we are allowed to send more data. If we ingest more
-	 * data then usb_serial_generic_write() will internally try to process
-	 * as much data as possible with any number of URBs without giving us
-	 * the chance to wait in between transfers. For any bytes that we did
-	 * not transfer TTY core will call us again, with the buffer and count
-	 * adjusted to the remaining data.
-	 */
-	max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
+	if (tty_get_baud_rate(tty) < 9600 && count >= 128)
+		/*
+		 * Writing larger buffers can take longer than the hardware
+		 * allows before discarding the write buffer. Limit the
+		 * transfer size in such cases.
+		 * These values have been found by empirical testing.
+		 */
+		max_tx_size = 128;
+	else
+		/*
+		* Only ingest as many bytes as we can transfer with one URB at
+		* a time. Once an URB has been written we need to wait for the
+		* R_II_B2 status event before we are allowed to send more data.
+		* If we ingest more data then usb_serial_generic_write() will
+		* internally try to process as much data as possible with any
+		* number of URBs without giving us the chance to wait in
+		* between transfers.
+		*/
+		max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
 
 	reinit_completion(&ch348_port->write_completion);
 
 	mutex_lock(&ch348->write_lock);
+
+	/*
+	 * For any (remaining) bytes that we did not transfer TTY core will
+	 * call us again, with the buffer and count adjusted to the remaining
+	 * data.
+	 */
 	ret = usb_serial_generic_write(tty, port, buf, min(count, max_tx_size));
+
 	mutex_unlock(&ch348->write_lock);
 
 	if (ret <= 0)
