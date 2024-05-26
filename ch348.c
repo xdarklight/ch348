@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2022 Corentin Labbe <clabbe@baylibre.com>
  * With the help of Neil Armstrong <neil.armstrong@linaro.org>
+ * and the help of Martin Blumenstingl <martin.blumenstingl@googlemail.com>
  */
 
 #include <linux/completion.h>
