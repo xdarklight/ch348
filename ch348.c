@@ -15,6 +15,7 @@
 #include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/serial.h>
+#include <linux/serial_reg.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
@@ -32,11 +33,6 @@
 #define CH348_CTI_R	0x40
 #define CH348_CTI_DCD	0x80
 
-#define CH348_LO	0x02
-#define CH348_LP	0x04
-#define CH348_LF	0x08
-#define CH348_LB	0x10
-
 #define CMD_W_R		0xC0
 #define CMD_W_BR	0x80
 
@@ -52,11 +48,6 @@
 #define R_IO_I		0x9b
 #define R_TM_O		0x9c
 #define R_INIT		0xa1
-
-#define R_C1		0x01
-#define R_C2		0x02
-#define R_C4		0x04
-#define R_C5		0x06
 
 #define R_II_B1		0x06
 #define R_II_B2		0x02
@@ -212,13 +203,13 @@ static void ch348_process_status_urb(struct urb *urb)
 		} else if (status_entry->reg_iir == R_INIT) {
 			status_len = 12;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B1) {
-			if (status_entry->lsr_signal & CH348_LO)
+			if (status_entry->lsr_signal & UART_LSR_OE)
 				port->icount.overrun++;
-			if (status_entry->lsr_signal & CH348_LP)
+			if (status_entry->lsr_signal & UART_LSR_PE)
 				port->icount.parity++;
-			if (status_entry->lsr_signal & CH348_LF)
+			if (status_entry->lsr_signal & UART_LSR_FE)
 				port->icount.frame++;
-			if (status_entry->lsr_signal & CH348_LF)
+			if (status_entry->lsr_signal & UART_LSR_BI)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
 			complete_all(&ch348->ports[status_entry->portnum].write_completion);
@@ -277,11 +268,14 @@ static int ch348_configure(struct ch348 *ch348, int portnum)
 {
 	int ret;
 
-	ret = ch348_do_magic(ch348, portnum, CMD_W_R, R_C2, 0x87);
+	ret = ch348_do_magic(ch348, portnum, CMD_W_R, UART_FCR,
+			     UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
+			     UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
+			     UART_FCR_R_TRIG_10);
 	if (ret)
 		return ret;
 
-	return ch348_do_magic(ch348, portnum, CMD_W_R, R_C4, 0x08);
+	return ch348_do_magic(ch348, portnum, CMD_W_R, UART_MCR, UART_MCR_OUT2);
 }
 
 static void ch348_process_read_urb(struct urb *urb)
@@ -391,14 +385,17 @@ static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 mode)
 	int ret;
 
 	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
-		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, R_C4, 0x51);
+		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, UART_MCR,
+				     UART_MCR_DTR | UART_MCR_LOOP |
+				     UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_HF;
 	}
 
 	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
-		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, R_C4, 0x50);
+		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, UART_MCR,
+				     UART_MCR_LOOP | UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_NOR;
@@ -480,7 +477,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		goto out;
 	}
 
-	ret = ch348_do_magic(ch348, portnum, CMD_W_R, R_C1, 0x0F);
+	ret = ch348_do_magic(ch348, portnum, CMD_W_R, UART_IER,
+			     UART_IER_RDI | UART_IER_THRI |
+			     UART_IER_RLSI | UART_IER_MSI);
 	if (ret < 0)
 		goto out;
 
