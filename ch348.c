@@ -232,11 +232,8 @@ exit:
 			__func__, ret);
 }
 
-/*
- * Some values came from vendor tree, and we have no meaning for them, this
- * function simply use them.
- */
-static int ch348_do_magic(struct ch348 *ch348, int portnum, u8 action, u8 reg, u8 control)
+static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
+			     u8 reg, u8 control)
 {
 	struct ch348_magic *buffer;
 	int ret, len;
@@ -257,7 +254,7 @@ static int ch348_do_magic(struct ch348 *ch348, int portnum, u8 action, u8 reg, u
 	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer, 3, &len,
 			   CH348_CMD_TIMEOUT);
 	if (ret)
-		dev_err(&ch348->udev->dev, "Failed to write magic err=%d\n", ret);
+		dev_err(&ch348->udev->dev, "Failed to port config: %d\n", ret);
 
 	kfree(buffer);
 
@@ -268,14 +265,15 @@ static int ch348_configure(struct ch348 *ch348, int portnum)
 {
 	int ret;
 
-	ret = ch348_do_magic(ch348, portnum, CMD_W_R, UART_FCR,
-			     UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
-			     UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
-			     UART_FCR_R_TRIG_10);
+	ret = ch348_port_config(ch348, portnum, CMD_W_R, UART_FCR,
+				UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
+				UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
+				UART_FCR_R_TRIG_10);
 	if (ret)
 		return ret;
 
-	return ch348_do_magic(ch348, portnum, CMD_W_R, UART_MCR, UART_MCR_OUT2);
+	return ch348_port_config(ch348, portnum, CMD_W_R, UART_MCR,
+				 UART_MCR_OUT2);
 }
 
 static void ch348_process_read_urb(struct urb *urb)
@@ -385,17 +383,17 @@ static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 mode)
 	int ret;
 
 	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
-		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, UART_MCR,
-				     UART_MCR_DTR | UART_MCR_LOOP |
-				     UART_MCR_TCRTLR);
+		ret = ch348_port_config(ch348, portnum, CMD_W_BR, UART_MCR,
+					UART_MCR_DTR | UART_MCR_LOOP |
+					UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_HF;
 	}
 
 	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
-		ret = ch348_do_magic(ch348, portnum, CMD_W_BR, UART_MCR,
-				     UART_MCR_LOOP | UART_MCR_TCRTLR);
+		ret = ch348_port_config(ch348, portnum, CMD_W_BR, UART_MCR,
+					UART_MCR_LOOP | UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_NOR;
@@ -477,9 +475,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		goto out;
 	}
 
-	ret = ch348_do_magic(ch348, portnum, CMD_W_R, UART_IER,
-			     UART_IER_RDI | UART_IER_THRI |
-			     UART_IER_RLSI | UART_IER_MSI);
+	ret = ch348_port_config(ch348, portnum, CMD_W_R, UART_IER,
+				UART_IER_RDI | UART_IER_THRI |
+				UART_IER_RLSI | UART_IER_MSI);
 	if (ret < 0)
 		goto out;
 
