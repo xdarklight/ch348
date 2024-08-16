@@ -49,10 +49,6 @@
 #define R_TM_O		0x9c
 #define R_INIT		0xa1
 
-#define R_II_B1		0x06
-#define R_II_B2		0x02
-#define R_II_B3		0x00
-
 #define CMD_VER		0x96
 
 #define CH348_RX_PORT_CHUNK_LENGTH	32
@@ -202,7 +198,7 @@ static void ch348_process_status_urb(struct urb *urb)
 			dev_dbg(&port->dev, "Ignoring status with zero reg_iir\n");
 		} else if (status_entry->reg_iir == R_INIT) {
 			status_len = 12;
-		} else if ((status_entry->reg_iir & 0x0f) == R_II_B1) {
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			if (status_entry->lsr_signal & UART_LSR_OE)
 				port->icount.overrun++;
 			if (status_entry->lsr_signal & UART_LSR_PE)
@@ -211,7 +207,7 @@ static void ch348_process_status_urb(struct urb *urb)
 				port->icount.frame++;
 			if (status_entry->lsr_signal & UART_LSR_BI)
 				port->icount.brk++;
-		} else if ((status_entry->reg_iir & 0x0f) == R_II_B2) {
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
 			complete_all(&ch348->ports[status_entry->portnum].write_completion);
 		} else {
 			dev_warn(&port->dev,
@@ -345,10 +341,10 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 		/*
 		* Only ingest as many bytes as we can transfer with one URB at
 		* a time. Once an URB has been written we need to wait for the
-		* R_II_B2 status event before we are allowed to send more data.
-		* If we ingest more data then usb_serial_generic_write() will
-		* internally try to process as much data as possible with any
-		* number of URBs without giving us the chance to wait in
+		* UART_IIR_THRI status event before we are allowed to send more
+		* data. If we ingest more data then usb_serial_generic_write()
+		* will internally try to process as much data as possible with
+		* any number of URBs without giving us the chance to wait in
 		* between transfers.
 		*/
 		max_tx_size = port->bulk_out_size - CH348_TX_HDRSIZE;
