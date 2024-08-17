@@ -405,7 +405,6 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	int ret, portnum = port->port_number;
 	struct ch348_initbuf *buffer;
 	speed_t	baudrate;
-	u8 format;
 
 	if (termios_old && !tty_termios_hw_change(&tty->termios, termios_old))
 		return;
@@ -423,8 +422,6 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	 * and as high as 12000000 are working in practice.
 	 */
 	baudrate = clamp(tty_get_baud_rate(tty), 50, 12000000);
-
-	format = termios->c_cflag & CSTOPB ? 2 : 1;
 
 	buffer->paritytype = 0;
 	if (termios->c_cflag & PARENB) {
@@ -456,9 +453,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	buffer->port = portnum;
 	buffer->baudrate = cpu_to_be32(baudrate);
 
-	if (format == 2)
+	if (termios->c_cflag & CSTOPB)
 		buffer->format = 0x02;
-	else if (format == 1)
+	else
 		buffer->format = 0x00;
 
 	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
