@@ -165,12 +165,12 @@ static void ch348_process_status_urb(struct urb *urb)
 	case -ENOENT:
 	case -ESHUTDOWN:
 		/* this urb is terminated, clean up */
-		dev_dbg(&urb->dev->dev, "%s - urb shutting down with status: %d\n",
-			__func__, status);
+		dev_dbg(&urb->dev->dev, "urb shutting down with status: %d\n",
+			status);
 		return;
 	default:
-		dev_err(&urb->dev->dev, "%s - nonzero urb status received: %d\n",
-			__func__, status);
+		dev_err(&urb->dev->dev, "nonzero urb status received: %d\n",
+			status);
 		goto exit;
 	}
 
@@ -224,8 +224,9 @@ static void ch348_process_status_urb(struct urb *urb)
 exit:
 	ret = usb_submit_urb(urb, GFP_ATOMIC);
 	if (ret)
-		dev_err(&urb->dev->dev, "%s - usb_submit_urb failed; %d\n",
-			__func__, ret);
+		dev_err(&urb->dev->dev,
+			"Failed to re-submit status/interrupt URB: %d\n",
+			ret);
 }
 
 static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
@@ -543,8 +544,7 @@ static int ch348_attach(struct usb_serial *serial)
 	ret = usb_submit_urb(ch348->status_urb, GFP_KERNEL);
 	if (ret) {
 		dev_err(&ch348->udev->dev,
-			"%s - failed to submit status/interrupt urb %i\n",
-			__func__, ret);
+			"Failed to submit status/interrupt urb %i\n", ret);
 		goto err_free_status_urb;
 	}
 
@@ -663,8 +663,7 @@ static int ch348_resume(struct usb_serial *serial)
 	ret = usb_submit_urb(ch348->status_urb, GFP_KERNEL);
 	if (ret) {
 		dev_err(&ch348->udev->dev,
-			"%s - failed to submit status/interrupt urb %i\n",
-			__func__, ret);
+			"Failed to submit status/interrupt urb %i\n", ret);
 		return ret;
 	}
 
