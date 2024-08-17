@@ -423,6 +423,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	 * and as high as 12000000 are working in practice.
 	 */
 	baudrate = clamp(tty_get_baud_rate(tty), 50, 12000000);
+	tty_termios_encode_baud_rate(&tty->termios, baudrate, baudrate);
 
 	buffer->paritytype = 0;
 	if (termios->c_cflag & PARENB) {
