@@ -57,7 +57,10 @@
 
 #define CMD_VER		0x96
 
-#define CH348_RX_PORT_CHUNK_LENGTH	32
+#define CH348_MAXPORT			8
+#define CH348_SERIAL_RX_PORTNUM		0
+#define CH348_STATUS_INT_PORTNUM	1
+
 #define CH348_RX_PORT_MAX_LENGTH	30
 
 struct ch348_rxbuf {
@@ -86,9 +89,8 @@ struct ch348_initbuf {
 	u8 unknown;
 } __packed;
 
-#define CH348_MAXPORT			8
-#define CH348_SERIAL_RX_PORTNUM		0
-#define CH348_STATUS_INT_PORTNUM	1
+#define CH348_INITBUF_FORMAT_STOPBITS		0x2
+#define CH348_INITBUF_FORMAT_NO_STOPBITS	0x0
 
 /*
  * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for
@@ -207,7 +209,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 					struct urb *urb)
 {
-	unsigned int portnum, usblen, i;
+	unsigned int portnum, serial_rx_len, i;
 	struct usb_serial_port *port;
 	struct ch348_rxbuf *rxb;
 
@@ -216,7 +218,7 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length; i += CH348_RX_PORT_CHUNK_LENGTH) {
+	for (i = 0; i < urb->actual_length; i += sizeof(*rxb)) {
 		rxb = urb->transfer_buffer + i;
 		portnum = rxb->port;
 		if (portnum >= CH348_MAXPORT) {
@@ -226,17 +228,17 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 
 		port = serial->port[portnum];
 
-		usblen = rxb->length;
-		if (usblen > CH348_RX_PORT_MAX_LENGTH) {
+		serial_rx_len = rxb->length;
+		if (serial_rx_len > CH348_RX_PORT_MAX_LENGTH) {
 			dev_dbg(&port->dev, "Invalid length %d for port %d\n",
-				usblen, portnum);
+				serial_rx_len, portnum);
 			break;
 		}
 
-		tty_insert_flip_string(&port->port, rxb->data, usblen);
+		tty_insert_flip_string(&port->port, rxb->data, serial_rx_len);
 		tty_flip_buffer_push(&port->port);
 
-		port->icount.rx += usblen;
+		port->icount.rx += serial_rx_len;
 	}
 }
 
@@ -364,14 +366,19 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	tty_termios_encode_baud_rate(&tty->termios, baudrate, baudrate);
 	ch348->ports[port->port_number].baudrate = baudrate;
 
-	buffer->paritytype = 0;
 	if (termios->c_cflag & PARENB) {
-		if (termios->c_cflag & PARODD)
-			buffer->paritytype += 1;
-		else
-			buffer->paritytype += 2;
-		if  (termios->c_cflag & CMSPAR)
-			buffer->paritytype += 2;
+		if  (termios->c_cflag & CMSPAR) {
+			if (termios->c_cflag & PARODD)
+				buffer->paritytype = 3;
+			else
+				buffer->paritytype = 4;
+		} else if (termios->c_cflag & PARODD) {
+			buffer->paritytype = 1;
+		} else {
+			buffer->paritytype = 2;
+		}
+	} else {
+		buffer->paritytype = 0;
 	}
 
 	switch (C_CSIZE(tty)) {
@@ -389,15 +396,15 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		buffer->databits = 8;
 		break;
 	}
-	buffer->cmd = CMD_WB_E | (portnum & 0x0F);
+	buffer->cmd = CMD_WB_E | portnum;
 	buffer->reg = R_INIT;
 	buffer->port = portnum;
 	buffer->baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		buffer->format = 0x02;
+		buffer->format = CH348_INITBUF_FORMAT_STOPBITS;
 	else
-		buffer->format = 0x00;
+		buffer->format = CH348_INITBUF_FORMAT_NO_STOPBITS;
 
 	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
