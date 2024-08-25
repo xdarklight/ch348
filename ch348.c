@@ -57,6 +57,23 @@
 
 #define CMD_VER		0x96
 
+
+/*
+ * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for the 8
+ * serial ports, and another pair of Bulk USB endpoints to set port settings
+ * and receive port status events.
+ *
+ * The USB serial cores ties every Bulk endpoints pairs to each ports, In our
+ * case it will set port 0 with the rx/tx endpoints and port 1 with the
+ * setup/status endpoints.
+ *
+ * For bulk writes we skip all of USB serial core's helpers and implement it on
+ * our own since for serial TX we need to not only wait for the URB to complete
+ * but also for the UART_IIR_THRI signal.
+ *
+ * For bulk reads we use USB serial core's helpers, even for the status/int
+ * handling as it simplifies our code.
+ */
 #define CH348_MAXPORT			8
 #define CH348_SERIAL_RX_PORTNUM		0
 #define CH348_STATUS_INT_PORTNUM	1
@@ -91,16 +108,6 @@ struct ch348_initbuf {
 
 #define CH348_INITBUF_FORMAT_STOPBITS		0x2
 #define CH348_INITBUF_FORMAT_NO_STOPBITS	0x0
-
-/*
- * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for
- * the 8 serial ports, and another pair of Bulk USB endpoints to
- * set port settings and receive port status events.
- *
- * The USB serial cores ties every Bulk endpoints pairs to each ports,
- * but in our case it will set port 0 with the rx/tx endpoints
- * and port 1 with the setup/status endpoints.
- */
 
 /*
  * struct ch348_port - per-port information
