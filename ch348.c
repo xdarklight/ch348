@@ -2,9 +2,13 @@
 /*
  * USB serial driver for USB to Octal UARTs chip ch348.
  *
- * Copyright (C) 2022 Corentin Labbe <clabbe@baylibre.com>
+ * Copyright (C) 2024 Corentin Labbe <clabbe@baylibre.com>
  * With the help of Neil Armstrong <neil.armstrong@linaro.org>
  * and the help of Martin Blumenstingl <martin.blumenstingl@googlemail.com>
+ *
+ * Based on the ch9344 driver:
+ *   https://github.com/WCHSoftGroup/ch9344ser_linux/
+ *   Copyright (C) 2024 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
 #include <linux/completion.h>
