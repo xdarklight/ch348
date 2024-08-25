@@ -255,7 +255,7 @@ static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
 			     u8 reg, u8 control)
 {
 	struct ch348_magic *buffer;
-	int ret, len;
+	int ret;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
 	if (!buffer)
@@ -270,8 +270,8 @@ static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
 	buffer->reg = reg;
 	buffer->control = control;
 
-	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer, 3, &len,
-			   CH348_CMD_TIMEOUT);
+	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer, sizeof(*buffer),
+			   NULL, CH348_CMD_TIMEOUT);
 	if (ret)
 		dev_err(&ch348->udev->dev, "Failed to port config: %d\n", ret);
 
