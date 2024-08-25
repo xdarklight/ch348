@@ -139,8 +139,7 @@ struct ch348_magic {
 } __packed;
 
 struct ch348_status_entry {
-	u8 portnum:4;
-	u8 unused:4;
+	u8 portnum;
 	u8 reg_iir;
 	union {
 		u8 lsr_signal;
@@ -149,12 +148,15 @@ struct ch348_status_entry {
 	};
 } __packed;
 
+#define CH348_STATUS_ENTRY_PORTNUM_MASK		0xf
+
 static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 	struct ch348_status_entry *status_entry;
 	struct usb_serial_port *port;
 	unsigned int i, status_len;
+	u8 portnum;
 
 	if (urb->actual_length < 3) {
 		dev_warn_ratelimited(&ch348->udev->dev,
@@ -165,15 +167,16 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 
 	for (i = 0; i < urb->actual_length;) {
 		status_entry = urb->transfer_buffer + i;
+		portnum = status_entry->portnum & CH348_STATUS_ENTRY_PORTNUM_MASK;
 
-		if (status_entry->portnum >= CH348_MAXPORT) {
+		if (portnum >= CH348_MAXPORT) {
 			dev_warn_ratelimited(&ch348->udev->dev,
 					     "Invalid port %d in status entry\n",
-					     status_entry->portnum);
+					     portnum);
 			break;
 		}
 
-		port = serial->port[status_entry->portnum];
+		port = serial->port[portnum];
 		status_len = 3;
 
 		if (!status_entry->reg_iir) {
