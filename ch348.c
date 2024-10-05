@@ -75,8 +75,8 @@
  * handling as it simplifies our code.
  */
 #define CH348_MAXPORT			8
-#define CH348_SERIAL_RX_PORTNUM		0
-#define CH348_STATUS_INT_PORTNUM	1
+#define CH348_PORTNUM_SERIAL_RX_TX	0
+#define CH348_PORTNUM_STATUS_INT	1
 
 #define CH348_RX_PORT_MAX_LENGTH	30
 
@@ -253,9 +253,9 @@ static void ch348_process_read_urb(struct urb *urb)
 {
 	struct usb_serial_port *port = urb->context;
 
-	if (port->port_number == CH348_SERIAL_RX_PORTNUM)
+	if (port->port_number == CH348_PORTNUM_SERIAL_RX_TX)
 		ch348_process_serial_rx_urb(port->serial, urb);
-	else if (port->port_number == CH348_STATUS_INT_PORTNUM)
+	else if (port->port_number == CH348_PORTNUM_STATUS_INT)
 		ch348_process_status_urb(port->serial, urb);
 	else
 		dev_warn_ratelimited(&port->serial->dev->dev,
@@ -557,18 +557,18 @@ static int ch348_submit_read_urbs(struct usb_serial *serial)
 {
 	int ret;
 
-	ret = ch348_submit_read_urb(serial, CH348_SERIAL_RX_PORTNUM);
+	ret = ch348_submit_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
 	if (ret) {
 		dev_err(&serial->dev->dev,
 			"Failed to submit serial RX URB, err=%d\n", ret);
 		return ret;
 	}
 
-	ret = ch348_submit_read_urb(serial, CH348_STATUS_INT_PORTNUM);
+	ret = ch348_submit_read_urb(serial, CH348_PORTNUM_STATUS_INT);
 	if (ret) {
 		dev_err(&serial->dev->dev,
 			"Failed to submit STATUS/INT URB, err=%d\n", ret);
-		ch348_kill_read_urb(serial, CH348_SERIAL_RX_PORTNUM);
+		ch348_kill_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
 	}
 
 	return ret;
@@ -576,8 +576,8 @@ static int ch348_submit_read_urbs(struct usb_serial *serial)
 
 static void ch348_kill_read_urbs(struct usb_serial *serial)
 {
-	ch348_kill_read_urb(serial, CH348_STATUS_INT_PORTNUM);
-	ch348_kill_read_urb(serial, CH348_SERIAL_RX_PORTNUM);
+	ch348_kill_read_urb(serial, CH348_PORTNUM_STATUS_INT);
+	ch348_kill_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
 }
 
 static void ch348_print_version(struct usb_serial *serial)
