@@ -540,45 +540,33 @@ write_done:
 	usb_serial_port_softint(port);
 }
 
-static int ch348_submit_read_urb(struct usb_serial *serial, u8 port_number)
-{
-	return usb_serial_generic_submit_read_urbs(serial->port[port_number],
-						   GFP_KERNEL);
-}
-
-static void ch348_kill_read_urb(struct usb_serial *serial, u8 port_number)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(serial->port[port_number]->read_urbs); ++i)
-		usb_kill_urb(serial->port[port_number]->read_urbs[i]);
-}
-
-static int ch348_submit_read_urbs(struct usb_serial *serial)
+static int ch348_submit_urbs(struct usb_serial *serial)
 {
 	int ret;
 
-	ret = ch348_submit_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
+	ret = usb_serial_generic_open(NULL,
+				      serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit serial RX URB, err=%d\n", ret);
+			"Failed to open RX/TX port, err=%d\n", ret);
 		return ret;
 	}
 
-	ret = ch348_submit_read_urb(serial, CH348_PORTNUM_STATUS_INT);
+	ret = usb_serial_generic_open(NULL,
+				      serial->port[CH348_PORTNUM_STATUS_INT]);
 	if (ret) {
 		dev_err(&serial->dev->dev,
 			"Failed to submit STATUS/INT URB, err=%d\n", ret);
-		ch348_kill_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
+		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 	}
 
 	return ret;
 }
 
-static void ch348_kill_read_urbs(struct usb_serial *serial)
+static void ch348_kill_urbs(struct usb_serial *serial)
 {
-	ch348_kill_read_urb(serial, CH348_PORTNUM_STATUS_INT);
-	ch348_kill_read_urb(serial, CH348_PORTNUM_SERIAL_RX_TX);
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT]);
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 }
 
 static void ch348_print_version(struct usb_serial *serial)
@@ -640,7 +628,7 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->bulk_out_ep = usb_sndbulkpipe(usb_dev, tx_epd->bEndpointAddress);
 	ch348->cmd_ep = usb_sndbulkpipe(usb_dev, cmd_epd->bEndpointAddress);
 
-	ret = ch348_submit_read_urbs(serial);
+	ret = ch348_submit_urbs(serial);
 	if (ret)
 		goto err_free_ch348;
 
@@ -658,7 +646,7 @@ static void ch348_release(struct usb_serial *serial)
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 
 	cancel_work_sync(&ch348->write_work);
-	ch348_kill_read_urbs(serial);
+	ch348_kill_urbs(serial);
 
 	kfree(ch348);
 }
@@ -690,7 +678,7 @@ static int ch348_resume(struct usb_serial *serial)
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 	int ret;
 
-	ret = ch348_submit_read_urbs(serial);
+	ret = ch348_submit_urbs(serial);
 	if (ret)
 		return ret;
 
