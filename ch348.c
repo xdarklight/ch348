@@ -123,7 +123,6 @@ struct ch348_port {
 
 /*
  * struct ch348 - main container for all this driver information
- * @udev:		pointer to the CH348 USB device
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
  * @write_work:		worker for processing the write queues
@@ -133,7 +132,6 @@ struct ch348_port {
  * @small_package:	indicates package size: small (CH348Q) or large (CH348L)
  */
 struct ch348 {
-	struct usb_device *udev;
 	struct ch348_port ports[CH348_MAXPORT];
 	struct usb_serial *serial;
 
@@ -173,7 +171,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 	u8 portnum;
 
 	if (urb->actual_length < 3) {
-		dev_warn_ratelimited(&ch348->udev->dev,
+		dev_warn_ratelimited(&ch348->serial->dev->dev,
 				     "Received too short status buffer with %u bytes\n",
 				     urb->actual_length);
 		return;
@@ -184,7 +182,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		portnum = status_entry->portnum & CH348_STATUS_ENTRY_PORTNUM_MASK;
 
 		if (portnum >= CH348_MAXPORT) {
-			dev_warn_ratelimited(&ch348->udev->dev,
+			dev_warn_ratelimited(&ch348->serial->dev->dev,
 					     "Invalid port %d in status entry\n",
 					     portnum);
 			break;
@@ -288,10 +286,11 @@ static int ch348_port_config(struct usb_serial_port *port, u8 action, u8 reg,
 	buffer->reg = reg;
 	buffer->control = control;
 
-	ret = usb_bulk_msg(ch348->udev, ch348->config_ep, buffer,
+	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buffer,
 			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
 	if (ret) {
-		dev_err(&ch348->udev->dev, "Failed to write port config: %d\n", ret);
+		dev_err(&ch348->serial->dev->dev,
+			"Failed to write port config: %d\n", ret);
 		goto out;
 	}
 
@@ -410,11 +409,11 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
-	ret = usb_bulk_msg(ch348->udev, ch348->config_ep, buffer,
+	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buffer,
 			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
 	if (ret < 0) {
-		dev_err(&ch348->udev->dev, "Failed to change line settings: err=%d\n",
-			ret);
+		dev_err(&ch348->serial->dev->dev,
+			"Failed to change line settings: err=%d\n", ret);
 		goto out_free;
 	}
 
@@ -524,7 +523,7 @@ static void ch348_write_work(struct work_struct *work)
 	usb_serial_debug_data(&port->dev, __func__, count + CH348_TX_HDRSIZE,
 			      (const unsigned char *)rxt);
 
-	ret = usb_bulk_msg(ch348->udev, ch348->tx_ep, rxt,
+	ret = usb_bulk_msg(ch348->serial->dev, ch348->tx_ep, rxt,
 			   count + CH348_TX_HDRSIZE, NULL, CH348_CMD_TIMEOUT);
 	if (ret) {
 		dev_err_console(port,
@@ -621,7 +620,6 @@ static int ch348_attach(struct usb_serial *serial)
 
 	usb_set_serial_data(serial, ch348);
 
-	ch348->udev = serial->dev;
 	ch348->serial = serial;
 
 	INIT_WORK(&ch348->write_work, ch348_write_work);
@@ -629,11 +627,11 @@ static int ch348_attach(struct usb_serial *serial)
 	init_completion(&ch348->txbuf_completion);
 
 	tx_port = ch348->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
-	ch348->tx_ep = usb_sndbulkpipe(ch348->udev,
+	ch348->tx_ep = usb_sndbulkpipe(serial->dev,
 				       tx_port->bulk_out_endpointAddress);
 
 	config_port = ch348->serial->port[CH348_PORTNUM_STATUS_INT_CONFIG];
-	ch348->config_ep = usb_sndbulkpipe(ch348->udev,
+	ch348->config_ep = usb_sndbulkpipe(serial->dev,
 					   config_port->bulk_out_endpointAddress);
 
 	ret = ch348_detect_version(serial);
