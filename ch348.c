@@ -467,7 +467,7 @@ static void ch348_close(struct usb_serial_port *port)
 static void ch348_write_work(struct work_struct *work)
 {
 	struct ch348 *ch348 = container_of(work, struct ch348, write_work);
-	struct usb_serial_port *port;
+	struct usb_serial_port *port, *hw_tx_port;
 	unsigned int i, max_bytes;
 	struct ch348_txbuf *rxt;
 	unsigned long flags;
@@ -475,10 +475,11 @@ static void ch348_write_work(struct work_struct *work)
 
 	reinit_completion(&ch348->txbuf_completion);
 
+	hw_tx_port = ch348->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
+	rxt = hw_tx_port->write_urbs[0]->transfer_buffer;
 
 	for (i = 0; i < CH348_MAXPORT; i++) {
 		port = ch348->serial->port[i];
-		rxt = port->write_urbs[0]->transfer_buffer;
 
 		if (ch348->ports[i].baudrate < 9600)
 			/*
@@ -490,10 +491,10 @@ static void ch348_write_work(struct work_struct *work)
 			max_bytes = 128;
 		else
 			/*
-			* Only ingest as many bytes as we can transfer with one URB at
-			* a time keeping the TX header in mind.
+			* Only ingest as many bytes as we can transfer with one
+			* URB at a time keeping the TX header in mind.
 			*/
-			max_bytes = port->bulk_out_size - CH348_TX_HDRSIZE;
+			max_bytes = hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE;
 
 		count = kfifo_out_locked(&port->write_fifo, rxt->data,
 					 max_bytes, &port->lock);
