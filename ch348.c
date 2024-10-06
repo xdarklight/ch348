@@ -295,21 +295,6 @@ out:
 	return ret;
 }
 
-static int ch348_configure(struct ch348 *ch348, int portnum)
-{
-	int ret;
-
-	ret = ch348_port_config(ch348, portnum, CMD_W_R, UART_FCR,
-				UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
-				UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
-				UART_FCR_R_TRIG_10);
-	if (ret)
-		return ret;
-
-	return ch348_port_config(ch348, portnum, CMD_W_R, UART_MCR,
-				 UART_MCR_OUT2);
-}
-
 static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 		       const unsigned char *buf, int count)
 {
@@ -452,11 +437,25 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
-	ret = ch348_configure(ch348, port->port_number);
-	if (ret)
-		dev_err(&ch348->udev->dev, "Fail to configure err=%d\n", ret);
+	ret = ch348_port_config(ch348, port->port_number, CMD_W_R, UART_FCR,
+				UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
+				UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
+				UART_FCR_R_TRIG_10);
+	if (ret) {
+		dev_err(&ch348->udev->dev,
+			"Failed to configure UART_FCR, err=%d\n", ret);
+		return ret;
+	}
 
-	return ret;
+	ret = ch348_port_config(ch348, port->port_number, CMD_W_R, UART_MCR,
+				UART_MCR_OUT2);
+	if (ret) {
+		dev_err(&ch348->udev->dev,
+			"Failed to configure UART_MCR, err=%d\n", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 static void ch348_close(struct usb_serial_port *port)
