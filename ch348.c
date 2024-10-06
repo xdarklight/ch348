@@ -96,21 +96,6 @@ struct ch348_txbuf {
 
 #define CH348_TX_HDRSIZE offsetof(struct ch348_txbuf, data)
 
-struct ch348_initbuf {
-	u8 cmd;
-	u8 reg;
-	u8 port;
-	__be32 baudrate;
-	u8 format;
-	u8 paritytype;
-	u8 databits;
-	u8 rate;
-	u8 unknown;
-} __packed;
-
-#define CH348_INITBUF_FORMAT_STOPBITS		0x2
-#define CH348_INITBUF_FORMAT_NO_STOPBITS	0x0
-
 /*
  * struct ch348_port - per-port information
  * @uartmode:		UART port current mode
@@ -144,11 +129,24 @@ struct ch348 {
 	bool small_package;
 };
 
-struct ch348_serial_config {
-	u8 action;
+struct ch348_config_buf {
+	u8 cmd;
 	u8 reg;
-	u8 control;
+	u8 data[];
 } __packed;
+
+struct ch348_config_data_init {
+	u8 port;
+	__be32 baudrate;
+	u8 format;
+	u8 paritytype;
+	u8 databits;
+	u8 rate;
+	u8 unknown;
+} __packed;
+
+#define CH348_CONFIG_DATA_INIT_FORMAT_STOPBITS		0x2
+#define CH348_CONFIG_DATA_INIT_FORMAT_NO_STOPBITS	0x0
 
 struct ch348_status_entry {
 	u8 portnum;
@@ -272,36 +270,48 @@ static void ch348_process_read_urb(struct urb *urb)
 				     port->port_number);
 }
 
-static int ch348_port_config(struct usb_serial_port *port, u8 action, u8 reg,
+static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
+			      size_t len)
+{
+	struct ch348_config_buf *buf;
+	size_t buf_len;
+	int ret;
+
+	buf_len = struct_size(buf, data, len);
+
+	buf = kzalloc(buf_len, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	buf->cmd = cmd;
+	buf->reg = reg;
+
+	if (len)
+		memcpy(buf->data, data, len);
+
+	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buf, buf_len,
+			   NULL, CH348_CMD_TIMEOUT);
+
+	kfree(buf);
+
+	return ret < 0 ? ret : 0;
+}
+
+static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
 			     u8 control)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	struct ch348_serial_config *buffer;
 	int ret;
-
-	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
-	if (!buffer)
-		return -ENOMEM;
 
 	if (port->port_number < 4)
 		reg += 0x10 * port->port_number;
 	else
 		reg += 0x10 * (port->port_number - 4) + 0x08;
 
-	buffer->action = action;
-	buffer->reg = reg;
-	buffer->control = control;
-
-	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buffer,
-			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
-	if (ret) {
+	ret = ch348_write_config(ch348, cmd, reg, &control, sizeof(control));
+	if (ret < 0)
 		dev_err(&ch348->serial->dev->dev,
 			"Failed to write port config: %d\n", ret);
-		goto out;
-	}
-
-out:
-	kfree(buffer);
 
 	return ret;
 }
@@ -350,17 +360,13 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 			      const struct ktermios *termios_old)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	struct ch348_config_data_init config = {};
 	struct ktermios *termios = &tty->termios;
 	int ret, portnum = port->port_number;
-	struct ch348_initbuf *buffer;
 	speed_t	baudrate;
 
 	if (termios_old && !tty_termios_hw_change(&tty->termios, termios_old))
 		return;
-
-	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
-	if (!buffer)
-		goto out;
 
 	/*
 	 * The datasheet states that only baud rates in range of 1200..6000000
@@ -375,66 +381,62 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
 			if (termios->c_cflag & PARODD)
-				buffer->paritytype = 3;
+				config.paritytype = 3;
 			else
-				buffer->paritytype = 4;
+				config.paritytype = 4;
 		} else if (termios->c_cflag & PARODD) {
-			buffer->paritytype = 1;
+			config.paritytype = 1;
 		} else {
-			buffer->paritytype = 2;
+			config.paritytype = 2;
 		}
 	} else {
-		buffer->paritytype = 0;
+		config.paritytype = 0;
 	}
 
 	switch (C_CSIZE(tty)) {
 	case CS5:
-		buffer->databits = 5;
+		config.databits = 5;
 		break;
 	case CS6:
-		buffer->databits = 6;
+		config.databits = 6;
 		break;
 	case CS7:
-		buffer->databits = 7;
+		config.databits = 7;
 		break;
 	case CS8:
 	default:
-		buffer->databits = 8;
+		config.databits = 8;
 		break;
 	}
 
-	buffer->cmd = CMD_WB_E | portnum;
-	buffer->reg = R_INIT;
-	buffer->port = portnum;
-	buffer->baudrate = cpu_to_be32(baudrate);
+	config.port = portnum;
+	config.baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		buffer->format = CH348_INITBUF_FORMAT_STOPBITS;
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_STOPBITS;
 	else
-		buffer->format = CH348_INITBUF_FORMAT_NO_STOPBITS;
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_NO_STOPBITS;
 
-	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
+	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
-	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buffer,
-			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
+	ret = ch348_write_config(ch348, CMD_WB_E | portnum, R_INIT, &config,
+				 sizeof(config));
 	if (ret < 0) {
 		dev_err(&ch348->serial->dev->dev,
 			"Failed to change line settings: err=%d\n", ret);
-		goto out_free;
+		goto out;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 	if (ret < 0)
-		goto out_free;
+		goto out;
 
 	if (C_CRTSCTS(tty))
 		ret = ch348_set_uartmode(port, M_HF);
 	else
 		ret = ch348_set_uartmode(port, M_NOR);
 
-out_free:
-	kfree(buffer);
 out:
 	if (ret && termios_old)
 		tty->termios = *termios_old;
