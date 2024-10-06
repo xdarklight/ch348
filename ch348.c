@@ -74,9 +74,9 @@
  * For bulk reads we use USB serial core's helpers, even for the status/int
  * handling as it simplifies our code.
  */
-#define CH348_MAXPORT			8
-#define CH348_PORTNUM_SERIAL_RX_TX	0
-#define CH348_PORTNUM_STATUS_INT	1
+#define CH348_MAXPORT				8
+#define CH348_PORTNUM_SERIAL_RX_TX		0
+#define CH348_PORTNUM_STATUS_INT_CONFIG		1
 
 #define CH348_RX_PORT_MAX_LENGTH	30
 
@@ -126,8 +126,8 @@ struct ch348_port {
  * @serial:		pointer to the serial structure
  * @write_work:		worker for processing the write queues
  * @txbuf_completion:	indicates that the TX buffer has been fully written out
- * @bulk_out_ep:	endpoint number for serial data transmit/write operation
- * @cmd_ep:		endpoint number for configure operations
+ * @tx_ep:		endpoint number for serial data transmit/write operation
+ * @config_ep:		endpoint number for configure operations
  */
 struct ch348 {
 	struct usb_device *udev;
@@ -137,11 +137,11 @@ struct ch348 {
 	struct work_struct write_work;
 	struct completion txbuf_completion;
 
-	int bulk_out_ep;
-	int cmd_ep;
+	int tx_ep;
+	int config_ep;
 };
 
-struct ch348_magic {
+struct ch348_serial_config {
 	u8 action;
 	u8 reg;
 	u8 control;
@@ -255,7 +255,7 @@ static void ch348_process_read_urb(struct urb *urb)
 
 	if (port->port_number == CH348_PORTNUM_SERIAL_RX_TX)
 		ch348_process_serial_rx_urb(port->serial, urb);
-	else if (port->port_number == CH348_PORTNUM_STATUS_INT)
+	else if (port->port_number == CH348_PORTNUM_STATUS_INT_CONFIG)
 		ch348_process_status_urb(port->serial, urb);
 	else
 		dev_warn_ratelimited(&port->serial->dev->dev,
@@ -266,7 +266,7 @@ static void ch348_process_read_urb(struct urb *urb)
 static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
 			     u8 reg, u8 control)
 {
-	struct ch348_magic *buffer;
+	struct ch348_serial_config *buffer;
 	int ret;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
@@ -282,11 +282,14 @@ static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
 	buffer->reg = reg;
 	buffer->control = control;
 
-	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer, sizeof(*buffer),
-			   NULL, CH348_CMD_TIMEOUT);
-	if (ret)
-		dev_err(&ch348->udev->dev, "Failed to port config: %d\n", ret);
+	ret = usb_bulk_msg(ch348->udev, ch348->config_ep, buffer,
+			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
+	if (ret) {
+		dev_err(&ch348->udev->dev, "Failed to write port config: %d\n", ret);
+		goto out;
+	}
 
+out:
 	kfree(buffer);
 
 	return ret;
@@ -358,11 +361,8 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		return;
 
 	buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
-	if (!buffer) {
-		if (termios_old)
-			tty->termios = *termios_old;
-		return;
-	}
+	if (!buffer)
+		goto out;
 
 	/*
 	 * The datasheet states that only baud rates in range of 1200..6000000
@@ -403,6 +403,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		buffer->databits = 8;
 		break;
 	}
+
 	buffer->cmd = CMD_WB_E | portnum;
 	buffer->reg = R_INIT;
 	buffer->port = portnum;
@@ -415,27 +416,30 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	buffer->rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
-	ret = usb_bulk_msg(ch348->udev, ch348->cmd_ep, buffer,
+	ret = usb_bulk_msg(ch348->udev, ch348->config_ep, buffer,
 			   sizeof(*buffer), NULL, CH348_CMD_TIMEOUT);
 	if (ret < 0) {
 		dev_err(&ch348->udev->dev, "Failed to change line settings: err=%d\n",
 			ret);
-		goto out;
+		goto out_free;
 	}
 
 	ret = ch348_port_config(ch348, portnum, CMD_W_R, UART_IER,
 				UART_IER_RDI | UART_IER_THRI |
 				UART_IER_RLSI | UART_IER_MSI);
 	if (ret < 0)
-		goto out;
+		goto out_free;
 
 	if (C_CRTSCTS(tty))
 		ret = ch348_set_uartmode(ch348, portnum, M_HF);
 	else
 		ret = ch348_set_uartmode(ch348, portnum, M_NOR);
 
-out:
+out_free:
 	kfree(buffer);
+out:
+	if (ret && termios_old)
+		tty->termios = *termios_old;
 }
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
@@ -515,7 +519,7 @@ static void ch348_write_work(struct work_struct *work)
 	usb_serial_debug_data(&port->dev, __func__, count + CH348_TX_HDRSIZE,
 			      (const unsigned char *) rxt);
 
-	ret = usb_bulk_msg(ch348->udev, ch348->bulk_out_ep, rxt,
+	ret = usb_bulk_msg(ch348->udev, ch348->tx_ep, rxt,
 			   count + CH348_TX_HDRSIZE, NULL, CH348_CMD_TIMEOUT);
 	if (ret) {
 		dev_err_console(port,
@@ -553,7 +557,7 @@ static int ch348_submit_urbs(struct usb_serial *serial)
 	}
 
 	ret = usb_serial_generic_open(NULL,
-				      serial->port[CH348_PORTNUM_STATUS_INT]);
+				      serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
 	if (ret) {
 		dev_err(&serial->dev->dev,
 			"Failed to submit STATUS/INT URB, err=%d\n", ret);
@@ -565,7 +569,7 @@ static int ch348_submit_urbs(struct usb_serial *serial)
 
 static void ch348_kill_urbs(struct usb_serial *serial)
 {
-	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT]);
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
 	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 }
 
@@ -593,24 +597,9 @@ static void ch348_print_version(struct usb_serial *serial)
 
 static int ch348_attach(struct usb_serial *serial)
 {
-	struct usb_endpoint_descriptor *cmd_epd, *tx_epd;
-	struct usb_device *usb_dev = serial->dev;
+	struct usb_serial_port *tx_port, *config_port;
 	struct ch348 *ch348;
 	int ret;
-
-	tx_epd = &serial->interface->cur_altsetting->endpoint[1].desc;
-	if (!usb_endpoint_is_bulk_out(tx_epd)) {
-		dev_err(&serial->dev->dev,
-			"Missing first bulk out (TX) endpoint\n");
-		return -ENODEV;
-	}
-
-	cmd_epd = &serial->interface->cur_altsetting->endpoint[3].desc;
-	if (!usb_endpoint_is_bulk_out(cmd_epd)) {
-		dev_err(&serial->dev->dev,
-			"Missing second bulk out (CMD) endpoint\n");
-		return -ENODEV;
-	}
 
 	ch348 = kzalloc(sizeof(*ch348), GFP_KERNEL);
 	if (!ch348)
@@ -625,8 +614,13 @@ static int ch348_attach(struct usb_serial *serial)
 
 	init_completion(&ch348->txbuf_completion);
 
-	ch348->bulk_out_ep = usb_sndbulkpipe(usb_dev, tx_epd->bEndpointAddress);
-	ch348->cmd_ep = usb_sndbulkpipe(usb_dev, cmd_epd->bEndpointAddress);
+	tx_port = ch348->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
+	ch348->tx_ep = usb_sndbulkpipe(ch348->udev,
+				       tx_port->bulk_out_endpointAddress);
+
+	config_port = ch348->serial->port[CH348_PORTNUM_STATUS_INT_CONFIG];
+	ch348->config_ep = usb_sndbulkpipe(ch348->udev,
+					   config_port->bulk_out_endpointAddress);
 
 	ret = ch348_submit_urbs(serial);
 	if (ret)
