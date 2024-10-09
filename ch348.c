@@ -128,6 +128,7 @@ struct ch348_port {
  * @txbuf_completion:	indicates that the TX buffer has been fully written out
  * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
+ * @small_package:	indicates package size: small (CH348Q) or large (CH348L)
  */
 struct ch348 {
 	struct usb_device *udev;
@@ -139,6 +140,8 @@ struct ch348 {
 
 	int tx_ep;
 	int config_ep;
+
+	bool small_package;
 };
 
 struct ch348_serial_config {
@@ -572,26 +575,35 @@ static void ch348_kill_urbs(struct usb_serial *serial)
 	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 }
 
-static void ch348_print_version(struct usb_serial *serial)
+static int ch348_detect_version(struct usb_serial *serial)
 {
+	struct ch348 *ch348 = usb_get_serial_data(serial);
 	u8 *version_buf;
 	int ret;
 
 	version_buf = kzalloc(4, GFP_KERNEL);
 	if (!version_buf)
-		return;
+		return -ENOMEM;
 
 	ret = usb_control_msg(serial->dev, usb_rcvctrlpipe(serial->dev, 0),
 			      CMD_VER,
 			      USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_IN,
 			      0, 0, version_buf, 4, CH348_CMD_TIMEOUT);
-	if (ret < 0)
-		dev_dbg(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
-	else
-		dev_info(&serial->dev->dev, "Found WCH CH348%s\n",
-			 (version_buf[1] & 0x80) ? "Q" : "L");
+	if (ret < 0) {
+		dev_err(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
+		goto out;
+	}
 
+	ret = 0;
+	ch348->small_package = !!(version_buf[1] & 0x80);
+
+	dev_info(&serial->dev->dev, "Found WCH CH348%c\n",
+		 ch348->small_package ? 'Q' : 'L');
+
+out:
 	kfree(version_buf);
+
+	return ret;
 }
 
 static int ch348_attach(struct usb_serial *serial)
@@ -621,11 +633,13 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->config_ep = usb_sndbulkpipe(ch348->udev,
 					   config_port->bulk_out_endpointAddress);
 
-	ret = ch348_submit_urbs(serial);
+	ret = ch348_detect_version(serial);
 	if (ret)
 		goto err_free_ch348;
 
-	ch348_print_version(serial);
+	ret = ch348_submit_urbs(serial);
+	if (ret)
+		goto err_free_ch348;
 
 	return 0;
 
