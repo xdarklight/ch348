@@ -266,9 +266,10 @@ static void ch348_process_read_urb(struct urb *urb)
 				     port->port_number);
 }
 
-static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
-			     u8 reg, u8 control)
+static int ch348_port_config(struct usb_serial_port *port, u8 action, u8 reg,
+			     u8 control)
 {
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	struct ch348_serial_config *buffer;
 	int ret;
 
@@ -276,10 +277,10 @@ static int ch348_port_config(struct ch348 *ch348, int portnum, u8 action,
 	if (!buffer)
 		return -ENOMEM;
 
-	if (portnum < 4)
-		reg += 0x10 * portnum;
+	if (port->port_number < 4)
+		reg += 0x10 * port->port_number;
 	else
-		reg += 0x10 * (portnum - 4) + 0x08;
+		reg += 0x10 * (port->port_number - 4) + 0x08;
 
 	buffer->action = action;
 	buffer->reg = reg;
@@ -313,12 +314,14 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 mode)
+static int ch348_set_uartmode(struct usb_serial_port *port, u8 mode)
 {
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	unsigned int portnum = port->port_number;
 	int ret;
 
 	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
-		ret = ch348_port_config(ch348, portnum, CMD_W_BR, UART_MCR,
+		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
 					UART_MCR_DTR | UART_MCR_LOOP |
 					UART_MCR_TCRTLR);
 		if (ret)
@@ -327,7 +330,7 @@ static int ch348_set_uartmode(struct ch348 *ch348, int portnum, u8 mode)
 	}
 
 	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
-		ret = ch348_port_config(ch348, portnum, CMD_W_BR, UART_MCR,
+		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
 					UART_MCR_LOOP | UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
@@ -412,16 +415,15 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		goto out_free;
 	}
 
-	ret = ch348_port_config(ch348, portnum, CMD_W_R, UART_IER,
-				UART_IER_RDI | UART_IER_THRI |
-				UART_IER_RLSI | UART_IER_MSI);
+	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
+				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 	if (ret < 0)
 		goto out_free;
 
 	if (C_CRTSCTS(tty))
-		ret = ch348_set_uartmode(ch348, portnum, M_HF);
+		ret = ch348_set_uartmode(port, M_HF);
 	else
-		ret = ch348_set_uartmode(ch348, portnum, M_NOR);
+		ret = ch348_set_uartmode(port, M_NOR);
 
 out_free:
 	kfree(buffer);
@@ -432,7 +434,6 @@ out:
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	int ret;
 
 	clear_bit(USB_SERIAL_THROTTLED, &port->flags);
@@ -440,20 +441,19 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
-	ret = ch348_port_config(ch348, port->port_number, CMD_W_R, UART_FCR,
+	ret = ch348_port_config(port, CMD_W_R, UART_FCR,
 				UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
 				UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
 				UART_FCR_R_TRIG_10);
 	if (ret) {
-		dev_err(&ch348->udev->dev,
+		dev_err(&port->serial->dev->dev,
 			"Failed to configure UART_FCR, err=%d\n", ret);
 		return ret;
 	}
 
-	ret = ch348_port_config(ch348, port->port_number, CMD_W_R, UART_MCR,
-				UART_MCR_OUT2);
+	ret = ch348_port_config(port, CMD_W_BR, UART_MCR, UART_MCR_OUT2);
 	if (ret) {
-		dev_err(&ch348->udev->dev,
+		dev_err(&port->serial->dev->dev,
 			"Failed to configure UART_MCR, err=%d\n", ret);
 		return ret;
 	}
