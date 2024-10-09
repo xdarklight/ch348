@@ -57,6 +57,8 @@
 
 #define CMD_VER		0x96
 
+/* 0x10 is normally UART_MCR_LOOP but for CH348 it's UART_MCR_RTS */
+#define UART_MCR_RTS_CH348	0x10
 
 /*
  * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for the 8
@@ -322,7 +324,7 @@ static int ch348_set_uartmode(struct usb_serial_port *port, u8 mode)
 
 	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
 		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
-					UART_MCR_DTR | UART_MCR_LOOP |
+					UART_MCR_DTR | UART_MCR_RTS_CH348 |
 					UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
@@ -331,7 +333,7 @@ static int ch348_set_uartmode(struct usb_serial_port *port, u8 mode)
 
 	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
 		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
-					UART_MCR_LOOP | UART_MCR_TCRTLR);
+					UART_MCR_RTS_CH348 | UART_MCR_TCRTLR);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_NOR;
