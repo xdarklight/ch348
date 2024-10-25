@@ -359,10 +359,11 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	/*
 	 * The datasheet states that only baud rates in range of 1200..6000000
-	 * are supported. Tests however show that even baud rates as low as 50
-	 * and as high as 12000000 are working in practice.
+	 * are supported. Tests with an oscilloscope confirm that even when
+	 * configuring a baud rate slower than 1200 the output stays at around
+	 * 1200 baud.
 	 */
-	baudrate = clamp(tty_get_baud_rate(tty), 50, 12000000);
+	baudrate = clamp(tty_get_baud_rate(tty), 1200, 6000000);
 	tty_termios_encode_baud_rate(&tty->termios, baudrate, baudrate);
 	ch348->ports[port->port_number].baudrate = baudrate;
 
