@@ -154,7 +154,7 @@ struct ch348_status_entry {
 	union {
 		u8 lsr_signal;
 		u8 modem_signal;
-		u8 init_data[10];
+		struct ch348_config_data_init init_data;
 	};
 } __packed;
 
