@@ -152,10 +152,11 @@ struct ch348_status_entry {
 	u8 portnum;
 	u8 reg_iir;
 	union {
+		u8 unknown;
 		u8 lsr_signal;
 		u8 modem_signal;
 		struct ch348_config_data_init init_data;
-	};
+	} data;
 } __packed;
 
 #define CH348_STATUS_ENTRY_PORTNUM_MASK		0xf
@@ -187,24 +188,29 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		}
 
 		port = serial->port[portnum];
-		status_len = 3;
+		status_len = sizeof(*status_entry) - sizeof(status_entry->data);
 
 		if (!status_entry->reg_iir) {
+			status_len += sizeof(status_entry->data.unknown);
 			dev_dbg(&port->dev, "Ignoring status with zero reg_iir\n");
 		} else if (status_entry->reg_iir == R_INIT) {
-			status_len = 12;
+			status_len += sizeof(status_entry->data.init_data);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
-			if (status_entry->lsr_signal & UART_LSR_OE)
+			status_len += sizeof(status_entry->data.lsr_signal);
+
+			if (status_entry->data.lsr_signal & UART_LSR_OE)
 				port->icount.overrun++;
-			if (status_entry->lsr_signal & UART_LSR_PE)
+			if (status_entry->data.lsr_signal & UART_LSR_PE)
 				port->icount.parity++;
-			if (status_entry->lsr_signal & UART_LSR_FE)
+			if (status_entry->data.lsr_signal & UART_LSR_FE)
 				port->icount.frame++;
-			if (status_entry->lsr_signal & UART_LSR_BI)
+			if (status_entry->data.lsr_signal & UART_LSR_BI)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
+			status_len += sizeof(status_entry->data.unknown);
 			complete_all(&ch348->txbuf_completion);
 		} else {
+			status_len += sizeof(status_entry->data.unknown);
 			dev_warn_ratelimited(&port->dev,
 					     "Unsupported status with reg_iir 0x%02x\n",
 					     status_entry->reg_iir);
