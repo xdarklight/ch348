@@ -824,9 +824,7 @@ static int ch348_gpio_direction_output(struct gpio_chip *gc,
 	if (ret)
 		return ret;
 
-	ch348->gc.set(gc, offset, value);
-
-	return 0;
+	return ch348->gc.set_rv(gc, offset, value);
 }
 
 static int ch348_gpio_get(struct gpio_chip *gc, unsigned int offset)
@@ -845,7 +843,7 @@ static int ch348_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	return test_bit(offset, bits);
 }
 
-static void ch348_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
+static int ch348_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 {
 	DECLARE_BITMAP(mask, CH348_NUM_GPIO) = { 0 };
 	DECLARE_BITMAP(bits, CH348_NUM_GPIO) = { 0 };
@@ -856,7 +854,7 @@ static void ch348_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
 	if (value)
 		set_bit(offset, bits);
 
-	ch348->gc.set_multiple(gc, mask, bits);
+	return ch348->gc.set_multiple_rv(gc, mask, bits);
 }
 
 static int ch348_gpio_get_multiple(struct gpio_chip *gc, unsigned long *mask,
@@ -883,8 +881,8 @@ static int ch348_gpio_get_multiple(struct gpio_chip *gc, unsigned long *mask,
 	return 0;
 }
 
-static void ch348_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
-				    unsigned long *bits)
+static int ch348_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
+				   unsigned long *bits)
 {
 	struct ch348 *ch348 = gpiochip_get_data(gc);
 	u64 val;
@@ -897,7 +895,7 @@ static void ch348_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
 
 		bitmap_to_arr64(&val, ch348->gpio_out_mask, gc->ngpio);
 
-		ch348_write_config_be64(ch348, R_MOD, R_IO_CO, val);
+		return ch348_write_config_be64(ch348, R_MOD, R_IO_CO, val);
 	}
 }
 
@@ -945,9 +943,9 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->gc.direction_input = ch348_gpio_direction_input;
 	ch348->gc.direction_output = ch348_gpio_direction_output;
 	ch348->gc.get = ch348_gpio_get;
-	ch348->gc.set = ch348_gpio_set;
+	ch348->gc.set_rv = ch348_gpio_set;
 	ch348->gc.get_multiple = ch348_gpio_get_multiple;
-	ch348->gc.set_multiple = ch348_gpio_set_multiple;
+	ch348->gc.set_multiple_rv = ch348_gpio_set_multiple;
 	ch348->gc.owner = THIS_MODULE;
 	ch348->gc.parent = &serial->dev->dev;
 	ch348->gc.base = -1;
