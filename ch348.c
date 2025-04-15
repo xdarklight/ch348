@@ -600,8 +600,8 @@ static int ch348_detect_version(struct usb_serial *serial)
 	ret = 0;
 	ch348->small_package = !!(version_buf[1] & 0x80);
 
-	dev_info(&serial->dev->dev, "Found WCH CH348%c\n",
-		 ch348->small_package ? 'Q' : 'L');
+	dev_info(&serial->dev->dev, "Found WCH CH348%c version 0x%02x\n",
+		 ch348->small_package ? 'Q' : 'L', version_buf[0]);
 
 out:
 	kfree(version_buf);
