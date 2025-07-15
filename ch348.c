@@ -460,7 +460,7 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 		return ret;
 	}
 
-	ret = ch348_port_config(port, CMD_W_BR, UART_MCR, UART_MCR_OUT2);
+	ret = ch348_port_config(port, CMD_W_R, UART_MCR, UART_MCR_OUT2);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
 			"Failed to configure UART_MCR, err=%d\n", ret);
