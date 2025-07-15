@@ -4,11 +4,11 @@
  *
  * Copyright (C) 2023 Corentin Labbe <clabbe@baylibre.com>
  * With the help of Neil Armstrong <neil.armstrong@linaro.org>
- * Copyright (C) 2024 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
+ * Copyright (C) 2025 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
  *
  * Based on the ch9344 driver:
  *   https://github.com/WCHSoftGroup/ch9344ser_linux/
- *   Copyright (C) 2024 Nanjing Qinheng Microelectronics Co., Ltd.
+ *   Copyright (C) 2025 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
 #include <linux/errno.h>
