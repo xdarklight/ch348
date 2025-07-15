@@ -48,6 +48,19 @@
 #define M_NOR		0x00
 #define M_HF		0x03
 
+/* R_C1 = 0x01 is UART_IER compatible */
+
+#define R_C2		0x02
+#define R_C2_ACTIVATE	0x87
+
+#define R_C3		0x03
+
+#define R_C4		0x04
+#define R_C4_ACTIVATE	0x08
+#define R_C4_HW_FLOW	0x50
+#define R_C4_NO_RTS	0x51
+
+#define R_C5		0x06
 #define R_MOD		0x97
 #define R_IO_D		0x98
 #define R_IO_O		0x99
@@ -56,9 +69,6 @@
 #define R_INIT		0xa1
 
 #define CMD_VER		0x96
-
-/* 0x10 is normally UART_MCR_LOOP but for CH348 it's UART_MCR_RTS */
-#define UART_MCR_RTS_CH348	0x10
 
 /*
  * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for the 8
@@ -374,17 +384,14 @@ static int ch348_set_uartmode(struct usb_serial_port *port, u8 mode)
 	int ret;
 
 	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
-		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
-					UART_MCR_DTR | UART_MCR_RTS_CH348 |
-					UART_MCR_TCRTLR);
+		ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_HW_FLOW);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_HF;
 	}
 
 	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
-		ret = ch348_port_config(port, CMD_W_BR, UART_MCR,
-					UART_MCR_RTS_CH348 | UART_MCR_TCRTLR);
+		ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_NO_RTS);
 		if (ret)
 			return ret;
 		ch348->ports[portnum].uartmode = M_NOR;
@@ -496,20 +503,17 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
-	ret = ch348_port_config(port, CMD_W_R, UART_FCR,
-				UART_FCR_ENABLE_FIFO | UART_FCR_CLEAR_RCVR |
-				UART_FCR_CLEAR_XMIT | UART_FCR_T_TRIG_00 |
-				UART_FCR_R_TRIG_10);
+	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
-			"Failed to configure UART_FCR: %d\n", ret);
+			"Failed to configure R_C2_ACTIVATE: %d\n", ret);
 		goto err_kill_urbs;
 	}
 
-	ret = ch348_port_config(port, CMD_W_R, UART_MCR, UART_MCR_OUT2);
+	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
-			"Failed to configure UART_MCR: %d\n", ret);
+			"Failed to configure R_C4_ACTIVATE: %d\n", ret);
 		goto err_kill_urbs;
 	}
 
