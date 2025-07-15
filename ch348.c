@@ -149,8 +149,8 @@ struct ch348_config_data_init {
 	u8 unknown;
 } __packed;
 
-#define CH348_CONFIG_DATA_INIT_FORMAT_STOPBITS		0x2
-#define CH348_CONFIG_DATA_INIT_FORMAT_NO_STOPBITS	0x0
+#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x2
+#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x0
 
 struct ch348_status_entry {
 	u8 portnum;
@@ -414,9 +414,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	config.baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_STOPBITS;
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
 	else
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_NO_STOPBITS;
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS;
 
 	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
