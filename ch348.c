@@ -704,7 +704,7 @@ static int ch348_resume(struct usb_serial *serial)
 }
 
 static const struct usb_device_id ch348_ids[] = {
-	{ USB_DEVICE(0x1a86, 0x55d9), },
+	{ USB_DEVICE(0x1a86, 0x55d9) },
 	{ /* sentinel */ }
 };
 
