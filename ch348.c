@@ -496,20 +496,22 @@ static void ch348_write_work(struct work_struct *work)
 	for (i = 0; i < CH348_MAXPORT; i++) {
 		port = ch348->serial->port[i];
 
-		if (ch348->ports[i].baudrate < 9600)
+		/*
+		 * Only ingest as many bytes as we can transfer with
+		 * one URB at a time keeping the TX header in mind.
+		 */
+		max_bytes = hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE;
+
+		if (ch348->ports[i].baudrate < 9600) {
 			/*
 			 * Writing larger buffers can take longer than the
 			 * hardware allows before discarding the write buffer.
-			 * Limit the transfer size in such cases.
+			 * Limit the transfer size in such cases but always
+			 * stay above the bulk_out_size.
 			 * These values have been found by empirical testing.
 			 */
-			max_bytes = 128;
-		else
-			/*
-			 * Only ingest as many bytes as we can transfer with
-			 * one URB at a time keeping the TX header in mind.
-			 */
-			max_bytes = hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE;
+			max_bytes = min(128, max_bytes);
+		}
 
 		count = kfifo_out_locked(&port->write_fifo, rxt->data,
 					 max_bytes, &port->lock);
