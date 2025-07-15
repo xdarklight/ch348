@@ -268,10 +268,6 @@ static void ch348_process_read_urb(struct urb *urb)
 		ch348_process_serial_rx_urb(port->serial, urb);
 	else if (port->port_number == CH348_PORTNUM_STATUS_INT_CONFIG)
 		ch348_process_status_urb(port->serial, urb);
-	else
-		dev_warn_ratelimited(&port->serial->dev->dev,
-				     "Ignoring read URB callback for unknown port/endpoint %u\n",
-				     port->port_number);
 }
 
 static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
