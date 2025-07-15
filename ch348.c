@@ -30,14 +30,6 @@
 
 #define CH348_CMD_TIMEOUT		2000
 
-#define CH348_CTO_D			0x01
-#define CH348_CTO_R			0x02
-
-#define CH348_CTI_C			0x10
-#define CH348_CTI_DSR			0x20
-#define CH348_CTI_R			0x40
-#define CH348_CTI_DCD			0x80
-
 #define CMD_W_R				0xc0
 #define CMD_W_BR			0x80
 
@@ -46,17 +38,28 @@
 
 /* R_C1 = 0x01 is UART_IER compatible */
 
+/* no official documentation available for R_C2 */
 #define R_C2				0x02
 #define R_C2_ACTIVATE			0x87
 
 #define R_C3				0x03
 
+/* no official documentation available for R_C4 */
 #define R_C4				0x04
+#define R_C4_DTR_OFF			0x00
+#define R_C4_DTR_ON			0x01
+#define R_C4_RTS_OFF			0x10
+#define R_C4_RTS_ON			0x11
 #define R_C4_ACTIVATE			0x08
 #define R_C4_HW_FLOW			0x50
-#define R_C4_NO_RTS			0x51 /* no official documentation, name is a guess */
+#define R_C4_NO_RTS			0x51
 
 #define R_C5				0x06
+
+#define VEN_R				0x85
+#define VEN_R_MODEM_STATUS_CHANGE	0x06
+
+#define VEN_W				0x8a
 
 #define CMD_VER				0x96
 
@@ -165,7 +168,8 @@ struct ch348_status_entry {
 	u8 portnum;
 	u8 reg_iir;
 	union {
-		u8 unknown;
+		u8 unknown8;
+		u8 unknown16[2];
 		u8 lsr_signal;
 		u8 modem_signal;
 		struct ch348_config_data_init init_data;
@@ -316,10 +320,12 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		status_len = sizeof(*status_entry) - sizeof(status_entry->data);
 
 		if (!status_entry->reg_iir) {
-			status_len += sizeof(status_entry->data.unknown);
+			status_len += sizeof(status_entry->data.unknown8);
 			dev_dbg(&port->dev, "Ignoring status with zero reg_iir\n");
 		} else if (status_entry->reg_iir == R_INIT) {
 			status_len += sizeof(status_entry->data.init_data);
+		} else if (status_entry->reg_iir == VEN_R) {
+			status_len += sizeof(status_entry->data.unknown16);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			status_len += sizeof(status_entry->data.lsr_signal);
 
@@ -332,10 +338,10 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			if (status_entry->data.lsr_signal & UART_LSR_BI)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
-			status_len += sizeof(status_entry->data.unknown);
+			status_len += sizeof(status_entry->data.unknown8);
 			ch348_write_done(port);
 		} else {
-			status_len += sizeof(status_entry->data.unknown);
+			status_len += sizeof(status_entry->data.unknown8);
 			dev_dbg_ratelimited(&port->dev,
 					    "Unsupported status with reg_iir 0x%02x\n",
 					    status_entry->reg_iir);
@@ -600,6 +606,40 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ch348_set_flow_control(port, termios, termios_old);
 }
 
+static void ch348_dtr_rts(struct usb_serial_port *port, int on)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	int ret;
+
+	/*
+	 * Only the first four ports have the modem control pins routed outside
+	 * the CH348Q package.
+	 */
+	if (ch348->package_type == CH348Q && port->port_number >= 4) {
+		dev_dbg(&port->dev,
+			"DTR/RTS is not supported on CH348Q port %u\n",
+			port->port_number);
+		return;
+	}
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4,
+				on ? R_C4_DTR_ON : R_C4_DTR_OFF);
+	if (ret)
+		dev_err(&port->dev, "Failed to %s DTR in R_C4: %d\n",
+			str_enable_disable(!!on), ret);
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4,
+				on ? R_C4_RTS_ON : R_C4_RTS_OFF);
+	if (ret)
+		dev_err(&port->dev, "Failed to %s RTS in R_C4: %d\n",
+			str_enable_disable(!!on), ret);
+
+	ret = ch348_port_config(port, CMD_WB_E, VEN_R,
+				VEN_R_MODEM_STATUS_CHANGE);
+	if (ret)
+		dev_err(&port->dev, "Failed to write VEN_R: %d\n", ret);
+}
+
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
@@ -785,6 +825,7 @@ static struct usb_serial_driver ch348_device = {
 	.open =			ch348_open,
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
+	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
