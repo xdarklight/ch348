@@ -95,6 +95,11 @@ struct ch348_txbuf {
 
 #define CH348_TX_HDRSIZE offsetof(struct ch348_txbuf, data)
 
+enum ch348_package {
+	CH348Q, /* LQFP48 (small) */
+	CH348L, /* LQFP100 (large) */
+};
+
 /**
  * struct ch348_port - per-port information
  * @uartmode:		UART port current mode
@@ -113,7 +118,7 @@ struct ch348_port {
  * @txbuf_completion:	indicates that the TX buffer has been fully written out
  * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
- * @small_package:	indicates package size: small (CH348Q) or large (CH348L)
+ * @package_type:	indicates package type
  */
 struct ch348 {
 	struct ch348_port ports[CH348_MAXPORT];
@@ -125,7 +130,7 @@ struct ch348 {
 	int tx_ep;
 	int config_ep;
 
-	bool small_package;
+	enum ch348_package package_type;
 };
 
 struct ch348_config_buf {
@@ -604,10 +609,11 @@ static int ch348_detect_version(struct usb_serial *serial)
 	}
 
 	ret = 0;
-	ch348->small_package = !!(version_buf[1] & 0x80);
+
+	ch348->package_type = (version_buf[1] & 0x80) ? CH348Q : CH348L;
 
 	dev_info(&serial->dev->dev, "Found WCH CH348%c version 0x%02x\n",
-		 ch348->small_package ? 'Q' : 'L', version_buf[0]);
+		 ch348->package_type == CH348Q ? 'Q' : 'L', version_buf[0]);
 
 out:
 	kfree(version_buf);
