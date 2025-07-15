@@ -447,8 +447,6 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	int ret;
 
-	clear_bit(USB_SERIAL_THROTTLED, &port->flags);
-
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
