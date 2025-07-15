@@ -95,7 +95,7 @@ struct ch348_txbuf {
 
 #define CH348_TX_HDRSIZE offsetof(struct ch348_txbuf, data)
 
-/*
+/**
  * struct ch348_port - per-port information
  * @uartmode:		UART port current mode
  * @baudrate:		A cached copy of current baudrate for the RX logic
@@ -105,7 +105,7 @@ struct ch348_port {
 	speed_t baudrate;
 };
 
-/*
+/**
  * struct ch348 - main container for all this driver information
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
