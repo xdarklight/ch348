@@ -174,9 +174,9 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 	u8 portnum;
 
 	if (urb->actual_length < 3) {
-		dev_warn_ratelimited(&ch348->serial->dev->dev,
-				     "Received too short status buffer with %u bytes\n",
-				     urb->actual_length);
+		dev_dbg_ratelimited(&ch348->serial->dev->dev,
+				    "Received too short status buffer with %u bytes\n",
+				    urb->actual_length);
 		return;
 	}
 
@@ -185,9 +185,9 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		portnum = status_entry->portnum & CH348_STATUS_ENTRY_PORTNUM_MASK;
 
 		if (portnum >= CH348_MAXPORT) {
-			dev_warn_ratelimited(&ch348->serial->dev->dev,
-					     "Invalid port %d in status entry\n",
-					     portnum);
+			dev_dbg_ratelimited(&ch348->serial->dev->dev,
+					    "Invalid port %d in status entry\n",
+					    portnum);
 			break;
 		}
 
@@ -215,9 +215,9 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			complete_all(&ch348->txbuf_completion);
 		} else {
 			status_len += sizeof(status_entry->data.unknown);
-			dev_warn_ratelimited(&port->dev,
-					     "Unsupported status with reg_iir 0x%02x\n",
-					     status_entry->reg_iir);
+			dev_dbg_ratelimited(&port->dev,
+					    "Unsupported status with reg_iir 0x%02x\n",
+					    status_entry->reg_iir);
 		}
 
 		i += status_len;
