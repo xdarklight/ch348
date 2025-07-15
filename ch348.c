@@ -424,7 +424,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 				 sizeof(config));
 	if (ret < 0) {
 		dev_err(&ch348->serial->dev->dev,
-			"Failed to change line settings: err=%d\n", ret);
+			"Failed to change line settings: %d\n", ret);
 		goto out;
 	}
 
@@ -458,14 +458,14 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 				UART_FCR_R_TRIG_10);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
-			"Failed to configure UART_FCR, err=%d\n", ret);
+			"Failed to configure UART_FCR: %d\n", ret);
 		return ret;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, UART_MCR, UART_MCR_OUT2);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
-			"Failed to configure UART_MCR, err=%d\n", ret);
+			"Failed to configure UART_MCR: %d\n", ret);
 		return ret;
 	}
 
@@ -536,7 +536,7 @@ static void ch348_write_work(struct work_struct *work)
 			   count + CH348_TX_HDRSIZE, NULL, CH348_CMD_TIMEOUT);
 	if (ret) {
 		dev_err_console(port,
-				"Failed to bulk write TX buffer, err=%d\n",
+				"Failed to bulk write TX buffer: %d\n",
 				ret);
 		goto write_done;
 	}
@@ -565,7 +565,7 @@ static int ch348_submit_urbs(struct usb_serial *serial)
 				      serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to open RX/TX port, err=%d\n", ret);
+			"Failed to open RX/TX port: %d\n", ret);
 		return ret;
 	}
 
@@ -573,7 +573,7 @@ static int ch348_submit_urbs(struct usb_serial *serial)
 				      serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit STATUS/INT URB, err=%d\n", ret);
+			"Failed to submit STATUS/INT URB: %d\n", ret);
 		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 	}
 
