@@ -30,7 +30,7 @@
 #include <linux/usb/serial.h>
 #include <linux/workqueue.h>
 
-#define CH348_CMD_TIMEOUT   2000
+#define CH348_CMD_TIMEOUT	5000
 
 #define CH348_CTO_D	0x01
 #define CH348_CTO_R	0x02
@@ -255,8 +255,8 @@ static void ch348_write_work(struct work_struct *work)
 {
 	struct ch348 *ch348 = container_of(work, struct ch348, write_work);
 	struct usb_serial_port *port, *hw_tx_port;
-	unsigned int i, count, max_bytes;
 	struct ch348_txbuf *rxt;
+	unsigned int i, count;
 	unsigned long flags;
 	int ret;
 
@@ -275,21 +275,9 @@ static void ch348_write_work(struct work_struct *work)
 		 * Only ingest as many bytes as we can transfer with
 		 * one URB at a time keeping the TX header in mind.
 		 */
-		max_bytes = hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE;
-
-		if (ch348->ports[i].baudrate < 9600) {
-			/*
-			 * Writing larger buffers can take longer than the
-			 * hardware allows before discarding the write buffer.
-			 * Limit the transfer size in such cases but always
-			 * stay above the bulk_out_size.
-			 * These values have been found by empirical testing.
-			 */
-			max_bytes = min(128, max_bytes);
-		}
-
 		count = kfifo_out_locked(&port->write_fifo, rxt->data,
-					 max_bytes, &port->lock);
+					 hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE,
+					 &port->lock);
 		if (!count)
 			continue;
 
