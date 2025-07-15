@@ -18,7 +18,6 @@
 #include <linux/kfifo.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/overflow.h>
 #include <linux/serial.h>
 #include <linux/serial_reg.h>
 #include <linux/slab.h>
