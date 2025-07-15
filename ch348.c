@@ -521,6 +521,15 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 	if (ch348->ports[port->port_number].hw_flow_control == hw_flow_control)
 		return;
 
+	if (hw_flow_control && ch348->package_type == CH348Q &&
+	    port->port_number >= 4) {
+		dev_err(&ch348->serial->dev->dev,
+			"Flow control is not supported on CH348Q port %u\n",
+			port->port_number);
+		termios->c_cflag &= ~CRTSCTS;
+		return;
+	}
+
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				hw_flow_control ? R_C4_HW_FLOW : R_C4_NO_RTS);
 	if (ret) {
