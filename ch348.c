@@ -49,16 +49,16 @@
 /* R_C1 = 0x01 is UART_IER compatible */
 
 #define R_C2		0x02
-#define R_C2_ACTIVATE	0x87
+#define R_C2_ACTIVATE	0x87 /* no official documentation available */
 
 #define R_C3		0x03
 
 #define R_C4		0x04
-#define R_C4_UNKNOWN00	0x00
-#define R_C4_UNKNOWN01	0x01
-#define R_C4_UNKNOWN10	0x10
-#define R_C4_UNKNOWN11	0x11
-#define R_C4_ACTIVATE	0x08
+#define R_C4_UNKNOWN00	0x00 /* no official documentation available */
+#define R_C4_UNKNOWN01	0x01 /* no official documentation available */
+#define R_C4_UNKNOWN10	0x10 /* no official documentation available */
+#define R_C4_UNKNOWN11	0x11 /* no official documentation available */
+#define R_C4_ACTIVATE	0x08 /* no official documentation available */
 #define R_C4_HW_FLOW	0x50
 #define R_C4_NO_RTS	0x51 /* no official documentation, name is a guess */
 
