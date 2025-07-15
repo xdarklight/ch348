@@ -45,9 +45,6 @@
 #define CMD_WB_E	0x90
 #define CMD_RB_E	0xc0
 
-#define M_NOR		0x00
-#define M_HF		0x03
-
 /* R_C1 = 0x01 is UART_IER compatible */
 
 #define R_C2		0x02
@@ -58,7 +55,7 @@
 #define R_C4		0x04
 #define R_C4_ACTIVATE	0x08
 #define R_C4_HW_FLOW	0x50
-#define R_C4_NO_RTS	0x51
+#define R_C4_NO_RTS	0x51 /* no official documentation, name is a guess */
 
 #define R_C5		0x06
 #define R_MOD		0x97
@@ -113,12 +110,12 @@ enum ch348_package {
 
 /**
  * struct ch348_port - per-port information
- * @uartmode:		UART port current mode
  * @baudrate:		A cached copy of current baudrate for the RX logic
+ * @hw_flow_control:	Whether HW flow control is enabled or disabled
  */
 struct ch348_port {
-	u8 uartmode;
 	speed_t baudrate;
+	bool hw_flow_control;
 };
 
 /**
@@ -377,26 +374,29 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static int ch348_set_uartmode(struct usb_serial_port *port, u8 mode)
+static void ch348_set_flow_control(struct usb_serial_port *port,
+				   struct ktermios *termios,
+				   const struct ktermios *termios_old)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	unsigned int portnum = port->port_number;
+	bool hw_flow_control = !!(termios->c_cflag & CRTSCTS);
 	int ret;
 
-	if (ch348->ports[portnum].uartmode == M_NOR && mode == M_HF) {
-		ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_HW_FLOW);
-		if (ret)
-			return ret;
-		ch348->ports[portnum].uartmode = M_HF;
+	if (ch348->ports[port->port_number].hw_flow_control == hw_flow_control)
+		return;
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4,
+				hw_flow_control ? R_C4_HW_FLOW : R_C4_NO_RTS);
+	if (ret) {
+		if (termios_old) {
+			termios->c_cflag &= ~CRTSCTS;
+			termios->c_cflag |= (termios_old->c_cflag & CRTSCTS);
+		}
+
+		return;
 	}
 
-	if (ch348->ports[portnum].uartmode == M_HF && mode == M_NOR) {
-		ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_NO_RTS);
-		if (ret)
-			return ret;
-		ch348->ports[portnum].uartmode = M_NOR;
-	}
-	return 0;
+	ch348->ports[port->port_number].hw_flow_control = hw_flow_control;
 }
 
 static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *port,
@@ -468,22 +468,14 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	if (ret < 0) {
 		dev_err(&ch348->serial->dev->dev,
 			"Failed to change line settings: %d\n", ret);
-		goto out;
+		if (termios_old)
+			tty->termios = *termios_old;
 	}
 
-	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
-				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
-	if (ret < 0)
-		goto out;
+	ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
+			  UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 
-	if (C_CRTSCTS(tty))
-		ret = ch348_set_uartmode(port, M_HF);
-	else
-		ret = ch348_set_uartmode(port, M_NOR);
-
-out:
-	if (ret && termios_old)
-		tty->termios = *termios_old;
+	ch348_set_flow_control(port, termios, termios_old);
 }
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
