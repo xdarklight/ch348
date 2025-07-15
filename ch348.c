@@ -384,10 +384,11 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 				config.paritytype = 3;
 			else
 				config.paritytype = 4;
-		} else if (termios->c_cflag & PARODD) {
-			config.paritytype = 1;
 		} else {
-			config.paritytype = 2;
+			if (termios->c_cflag & PARODD)
+				config.paritytype = 1;
+			else
+				config.paritytype = 2;
 		}
 	} else {
 		config.paritytype = 0;
