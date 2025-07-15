@@ -455,7 +455,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		config.paritytype = 0;
 	}
 
-	switch (C_CSIZE(tty)) {
+	switch (termios->c_cflag & CSIZE) {
 	case CS5:
 		config.databits = 5;
 		break;
