@@ -11,7 +11,6 @@
  *   Copyright (C) 2024 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
-#include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -109,11 +108,13 @@ enum ch348_package {
 
 /**
  * struct ch348_port - per-port information
- * @baudrate:		A cached copy of current baudrate for the RX logic
+ * @port:		Pointer to the struct usb_serial_port
+ * @tx_pending:		Indicates that the HW is still writing out the TX buffer
  * @hw_flow_control:	Whether HW flow control is enabled or disabled
  */
 struct ch348_port {
-	speed_t baudrate;
+	struct usb_serial_port *port;
+	bool tx_pending;
 	bool hw_flow_control;
 };
 
@@ -122,8 +123,6 @@ struct ch348_port {
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
  * @write_work:		worker for processing the write queues
- * @txbuf_completion:	indicates that the TX buffer has been fully written out
- * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
  * @num_open_ports:	number of ports currently open ports
  * @manage_urbs_lock:	protects submitting / killing URBs across all ports
@@ -134,9 +133,7 @@ struct ch348 {
 	struct usb_serial *serial;
 
 	struct work_struct write_work;
-	struct completion txbuf_completion;
 
-	int tx_ep;
 	int config_ep;
 
 	unsigned int num_open_ports;
@@ -229,6 +226,88 @@ static void ch348_kill_urbs(struct usb_serial *serial)
 	mutex_unlock(&ch348->manage_urbs_lock);
 }
 
+static void ch348_write_done(struct usb_serial_port *port)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+
+	ch348->ports[port->port_number].tx_pending = false;
+
+	usb_serial_port_softint(port);
+
+	if (!kfifo_is_empty(&port->write_fifo))
+		schedule_work(&ch348->write_work);
+}
+
+static void ch348_write_work(struct work_struct *work)
+{
+	struct ch348 *ch348 = container_of(work, struct ch348, write_work);
+	struct usb_serial *serial = ch348->serial;
+	struct usb_serial_port *tx_port, *port;
+	struct ch348_txbuf *txb;
+	unsigned int i, count;
+	unsigned long flags;
+	struct urb *urb;
+	int ret;
+
+	tx_port = serial->port[CH348_PORTNUM_SERIAL_RX_TX];
+
+	for (i = 0; i < CH348_MAXPORT; i++) {
+		if (ch348->ports[i].tx_pending)
+			continue;
+
+		port = serial->port[i];
+
+		/*
+		 * Prevent writing to the config endpoint for port
+		 * CH348_PORTNUM_STATUS_INT_CONFIG by using the second URB of
+		 * the tx port (CH348_PORTNUM_SERIAL_RX_TX).
+		 */
+		if (i == CH348_PORTNUM_STATUS_INT_CONFIG)
+			urb = tx_port->write_urbs[1];
+		else
+			urb = port->write_urbs[0];
+
+		txb = urb->transfer_buffer;
+
+		/*
+		 * Only ingest as many bytes as we can transfer with
+		 * one URB at a time keeping the TX header in mind.
+		 */
+		count = kfifo_out_locked(&port->write_fifo, txb->data,
+					 tx_port->bulk_out_size - CH348_TX_HDRSIZE,
+					 &port->lock);
+		if (!count)
+			continue;
+
+		urb->transfer_buffer_length = count + CH348_TX_HDRSIZE;
+
+		txb->port = port->port_number;
+		txb->length = cpu_to_le16(count);
+
+		spin_lock_irqsave(&port->lock, flags);
+		port->tx_bytes += count;
+		spin_unlock_irqrestore(&port->lock, flags);
+
+		usb_serial_debug_data(&port->dev, __func__,
+				      urb->transfer_buffer_length,
+				      urb->transfer_buffer);
+
+		ch348->ports[i].tx_pending = true;
+
+		ret = usb_submit_urb(urb, GFP_KERNEL);
+		if (ret) {
+			dev_err_console(port, "Failed to submit TX urb: %d\n",
+					ret);
+
+			spin_lock_irqsave(&port->lock, flags);
+			port->tx_bytes -= count;
+			spin_unlock_irqrestore(&port->lock, flags);
+
+			ch348_write_done(port);
+		}
+	}
+}
+
 static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
@@ -276,7 +355,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
 			status_len += sizeof(status_entry->data.unknown);
-			complete_all(&ch348->txbuf_completion);
+			ch348_write_done(port);
 		} else {
 			status_len += sizeof(status_entry->data.unknown);
 			dev_dbg_ratelimited(&port->dev,
@@ -332,6 +411,42 @@ static void ch348_process_read_urb(struct urb *urb)
 		ch348_process_serial_rx_urb(port->serial, urb);
 	else if (port->port_number == CH348_PORTNUM_STATUS_INT_CONFIG)
 		ch348_process_status_urb(port->serial, urb);
+}
+
+static void ch348_write_bulk_callback(struct urb *urb)
+{
+	struct usb_serial_port *port, *tx_port = urb->context;
+	struct ch348_txbuf *txb = urb->transfer_buffer;
+	u16 length = le16_to_cpu(txb->length);
+	unsigned long flags;
+
+	port = tx_port->serial->port[txb->port];
+
+	spin_lock_irqsave(&port->lock, flags);
+	port->tx_bytes -= length;
+	spin_unlock_irqrestore(&port->lock, flags);
+
+	switch (urb->status) {
+	case 0:
+		port->icount.tx += length;
+
+		/* processing continues once we receive UART_IIR_THRI. */
+		break;
+	case -ECONNRESET:
+	case -ENOENT:
+	case -ESHUTDOWN:
+		/* this urb is terminated, clean up */
+		dev_dbg(&urb->dev->dev,
+			"ch348_write_bulk_callback - urb shutting down with status: %d\n",
+			urb->status);
+		break;
+	default:
+		dev_err_console(port,
+				"ch348_write_bulk_callback - nonzero write bulk status received: %d\n",
+				urb->status);
+		ch348_write_done(port);
+		break;
+	}
 }
 
 static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
@@ -440,7 +555,6 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	 */
 	baudrate = clamp(tty_get_baud_rate(tty), 1200, 6000000);
 	tty_termios_encode_baud_rate(&tty->termios, baudrate, baudrate);
-	ch348->ports[port->port_number].baudrate = baudrate;
 
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
@@ -501,7 +615,10 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	int ret;
+
+	ch348->ports[port->port_number].port = port;
 
 	ret = ch348_submit_urbs(port->serial);
 	if (ret)
@@ -542,84 +659,6 @@ static void ch348_close(struct usb_serial_port *port)
 	ch348_kill_urbs(port->serial);
 }
 
-static void ch348_write_work(struct work_struct *work)
-{
-	struct ch348 *ch348 = container_of(work, struct ch348, write_work);
-	struct usb_serial_port *port, *hw_tx_port;
-	unsigned int i, max_bytes;
-	struct ch348_txbuf *rxt;
-	unsigned long flags;
-	int ret, count;
-
-	reinit_completion(&ch348->txbuf_completion);
-
-	hw_tx_port = ch348->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
-	rxt = hw_tx_port->write_urbs[0]->transfer_buffer;
-
-	for (i = 0; i < CH348_MAXPORT; i++) {
-		port = ch348->serial->port[i];
-
-		/*
-		 * Only ingest as many bytes as we can transfer with
-		 * one URB at a time keeping the TX header in mind.
-		 */
-		max_bytes = hw_tx_port->bulk_out_size - CH348_TX_HDRSIZE;
-
-		if (ch348->ports[i].baudrate < 9600) {
-			/*
-			 * Writing larger buffers can take longer than the
-			 * hardware allows before discarding the write buffer.
-			 * Limit the transfer size in such cases but always
-			 * stay above the bulk_out_size.
-			 * These values have been found by empirical testing.
-			 */
-			max_bytes = min(128, max_bytes);
-		}
-
-		count = kfifo_out_locked(&port->write_fifo, rxt->data,
-					 max_bytes, &port->lock);
-		if (count)
-			break;
-	}
-
-	if (!count)
-		return;
-
-	spin_lock_irqsave(&port->lock, flags);
-	port->tx_bytes += count;
-	spin_unlock_irqrestore(&port->lock, flags);
-
-	rxt->port = port->port_number;
-	rxt->length = cpu_to_le16(count);
-
-	usb_serial_debug_data(&port->dev, __func__, count + CH348_TX_HDRSIZE,
-			      (const unsigned char *)rxt);
-
-	ret = usb_bulk_msg(ch348->serial->dev, ch348->tx_ep, rxt,
-			   count + CH348_TX_HDRSIZE, NULL, CH348_CMD_TIMEOUT);
-	if (ret) {
-		dev_err_console(port,
-				"Failed to bulk write TX buffer: %d\n",
-				ret);
-		goto write_done;
-	}
-
-	if (!wait_for_completion_timeout(&ch348->txbuf_completion,
-					 msecs_to_jiffies(CH348_CMD_TIMEOUT)))
-		dev_err_console(port,
-				"Failed to wait for TX buffer to be fully written out\n");
-
-write_done:
-	spin_lock_irqsave(&port->lock, flags);
-	port->tx_bytes -= count;
-	spin_unlock_irqrestore(&port->lock, flags);
-
-	port->icount.tx += count;
-
-	schedule_work(&ch348->write_work);
-	usb_serial_port_softint(port);
-}
-
 static int ch348_detect_version(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
@@ -654,7 +693,7 @@ out:
 
 static int ch348_attach(struct usb_serial *serial)
 {
-	struct usb_serial_port *tx_port, *config_port;
+	struct usb_serial_port *config_port;
 	struct ch348 *ch348;
 	int ret;
 
@@ -667,12 +706,6 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->serial = serial;
 
 	INIT_WORK(&ch348->write_work, ch348_write_work);
-
-	init_completion(&ch348->txbuf_completion);
-
-	tx_port = ch348->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
-	ch348->tx_ep = usb_sndbulkpipe(serial->dev,
-				       tx_port->bulk_out_endpointAddress);
 
 	config_port = ch348->serial->port[CH348_PORTNUM_STATUS_INT_CONFIG];
 	ch348->config_ep = usb_sndbulkpipe(serial->dev,
@@ -751,6 +784,7 @@ static struct usb_serial_driver ch348_device = {
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
 	.process_read_urb =	ch348_process_read_urb,
+	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
 	.calc_num_ports =	ch348_calc_num_ports,
 	.attach =		ch348_attach,
