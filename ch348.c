@@ -11,6 +11,7 @@
  *   Copyright (C) 2024 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
+#include <linux/bitmap.h>
 #include <linux/completion.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -118,6 +119,8 @@ struct ch348_port {
  * @txbuf_completion:	indicates that the TX buffer has been fully written out
  * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
+ * @open_ports:		bitmap of ports that are currently opened
+ * @open_ports_lock:	protect against concurrent modification of open_ports
  * @package_type:	indicates package type
  */
 struct ch348 {
@@ -129,6 +132,9 @@ struct ch348 {
 
 	int tx_ep;
 	int config_ep;
+
+	DECLARE_BITMAP(open_ports, CH348_MAXPORT);
+	struct mutex open_ports_lock;
 
 	enum ch348_package package_type;
 };
@@ -164,6 +170,36 @@ struct ch348_status_entry {
 } __packed;
 
 #define CH348_STATUS_ENTRY_PORTNUM_MASK		0xf
+
+static int ch348_submit_urbs(struct usb_serial *serial)
+{
+	int ret;
+
+	ret = usb_serial_generic_open(NULL,
+				      serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
+	if (ret) {
+		dev_err(&serial->dev->dev, "Failed to open RX/TX port: %d\n",
+			ret);
+		return ret;
+	}
+
+	ret = usb_serial_generic_open(NULL,
+				      serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
+	if (ret) {
+		dev_err(&serial->dev->dev,
+			"Failed to open STATUS/INT port: %d\n", ret);
+		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void ch348_kill_urbs(struct usb_serial *serial)
+{
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
+}
 
 static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 {
@@ -447,6 +483,16 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	int ret;
 
+	scoped_guard(mutex, &ch348->open_ports_lock) {
+		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT)) {
+			ret = ch348_submit_urbs(port->serial);
+			if (ret)
+				return ret;
+		}
+
+		set_bit(port->port_number, ch348->open_ports);
+	}
+
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
@@ -457,26 +503,43 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
 			"Failed to configure UART_FCR: %d\n", ret);
-		return ret;
+		goto err_kill_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, UART_MCR, UART_MCR_OUT2);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
 			"Failed to configure UART_MCR: %d\n", ret);
-		return ret;
+		goto err_kill_urbs;
 	}
 
 	return 0;
+
+err_kill_urbs:
+	scoped_guard(mutex, &ch348->open_ports_lock) {
+		clear_bit(port->port_number, ch348->open_ports);
+
+		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
+			ch348_kill_urbs(port->serial);
+	}
+	return ret;
 }
 
 static void ch348_close(struct usb_serial_port *port)
 {
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	unsigned long flags;
 
 	spin_lock_irqsave(&port->lock, flags);
 	kfifo_reset_out(&port->write_fifo);
 	spin_unlock_irqrestore(&port->lock, flags);
+
+	scoped_guard(mutex, &ch348->open_ports_lock) {
+		clear_bit(port->port_number, ch348->open_ports);
+
+		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
+			ch348_kill_urbs(port->serial);
+	}
 }
 
 static void ch348_write_work(struct work_struct *work)
@@ -555,35 +618,6 @@ write_done:
 	usb_serial_port_softint(port);
 }
 
-static int ch348_submit_urbs(struct usb_serial *serial)
-{
-	int ret;
-
-	ret = usb_serial_generic_open(NULL,
-				      serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
-	if (ret) {
-		dev_err(&serial->dev->dev,
-			"Failed to open RX/TX port: %d\n", ret);
-		return ret;
-	}
-
-	ret = usb_serial_generic_open(NULL,
-				      serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
-	if (ret) {
-		dev_err(&serial->dev->dev,
-			"Failed to submit STATUS/INT URB: %d\n", ret);
-		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
-	}
-
-	return ret;
-}
-
-static void ch348_kill_urbs(struct usb_serial *serial)
-{
-	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
-	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
-}
-
 static int ch348_detect_version(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
@@ -642,11 +676,9 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->config_ep = usb_sndbulkpipe(serial->dev,
 					   config_port->bulk_out_endpointAddress);
 
-	ret = ch348_detect_version(serial);
-	if (ret)
-		goto err_free_ch348;
+	devm_mutex_init(&serial->dev->dev, &ch348->open_ports_lock);
 
-	ret = ch348_submit_urbs(serial);
+	ret = ch348_detect_version(serial);
 	if (ret)
 		goto err_free_ch348;
 
@@ -662,7 +694,6 @@ static void ch348_release(struct usb_serial *serial)
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 
 	cancel_work_sync(&ch348->write_work);
-	ch348_kill_urbs(serial);
 
 	kfree(ch348);
 }
@@ -692,11 +723,6 @@ static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
 static int ch348_resume(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
-	int ret;
-
-	ret = ch348_submit_urbs(serial);
-	if (ret)
-		return ret;
 
 	schedule_work(&ch348->write_work);
 
