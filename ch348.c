@@ -38,11 +38,11 @@
 #define CH348_CTI_R	0x40
 #define CH348_CTI_DCD	0x80
 
-#define CMD_W_R		0xC0
+#define CMD_W_R		0xc0
 #define CMD_W_BR	0x80
 
 #define CMD_WB_E	0x90
-#define CMD_RB_E	0xC0
+#define CMD_RB_E	0xc0
 
 #define M_NOR		0x00
 #define M_HF		0x03
