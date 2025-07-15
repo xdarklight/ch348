@@ -54,6 +54,10 @@
 #define R_C3		0x03
 
 #define R_C4		0x04
+#define R_C4_UNKNOWN00	0x00
+#define R_C4_UNKNOWN01	0x01
+#define R_C4_UNKNOWN10	0x10
+#define R_C4_UNKNOWN11	0x11
 #define R_C4_ACTIVATE	0x08
 #define R_C4_HW_FLOW	0x50
 #define R_C4_NO_RTS	0x51 /* no official documentation, name is a guess */
@@ -592,6 +596,33 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ch348_set_flow_control(port, termios, termios_old);
 }
 
+static void ch348_dtr_rts(struct usb_serial_port *port, int on)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	int ret;
+
+	/*
+	 * Only the first four ports have the modem control pins routed outside
+	 * the package.
+	 */
+	if (ch348->package_type == CH348Q && port->port_number >= 4) {
+		dev_dbg(&port->serial->dev->dev,
+			"DTR/RTS is not supported on CH348 port %u\n",
+			port->port_number);
+		return;
+	}
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_UNKNOWN01);
+	if (ret)
+		dev_err(&port->serial->dev->dev,
+			"Failed to configure R_C4_UNKNOWN01: %d\n", ret);
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_UNKNOWN11);
+	if (ret)
+		dev_err(&port->serial->dev->dev,
+			"Failed to configure R_C4_UNKNOWN11: %d\n", ret);
+}
+
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
@@ -771,6 +802,7 @@ static struct usb_serial_driver ch348_device = {
 	.open =			ch348_open,
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
+	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write =		ch348_write,
 	.calc_num_ports =	ch348_calc_num_ports,
