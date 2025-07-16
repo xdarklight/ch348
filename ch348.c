@@ -17,7 +17,6 @@
 #include <linux/kernel.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/refcount.h>
 #include <linux/serial.h>
 #include <linux/serial_reg.h>
@@ -126,8 +125,6 @@ struct ch348_port {
  * @write_work:		worker for processing the write queues
  * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
- * @num_open_ports:	number of ports currently open ports
- * @manage_urbs_lock:	protects submitting / killing URBs across all ports
  * @package_type:	indicates package type
  */
 struct ch348 {
@@ -138,9 +135,6 @@ struct ch348 {
 
 	int tx_ep;
 	int config_ep;
-
-	refcount_t num_open_ports;
-	struct mutex manage_urbs_lock;
 
 	enum ch348_package package_type;
 };
@@ -179,20 +173,14 @@ struct ch348_status_entry {
 
 static int ch348_submit_urbs(struct usb_serial *serial)
 {
-	struct ch348 *ch348 = usb_get_serial_data(serial);
-	int ret = 0;
-
-	mutex_lock(&ch348->manage_urbs_lock);
-
-	if (refcount_read(&ch348->num_open_ports))
-		goto out_increment_refcount;
+	int ret;
 
 	ret = usb_serial_generic_open(NULL,
 				      serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 	if (ret) {
 		dev_err(&serial->dev->dev, "Failed to open RX/TX port: %d\n",
 			ret);
-		goto out_unlock;
+		return ret;
 	}
 
 	ret = usb_serial_generic_open(NULL,
@@ -201,28 +189,16 @@ static int ch348_submit_urbs(struct usb_serial *serial)
 		dev_err(&serial->dev->dev,
 			"Failed to submit STATUS/INT URB: %d\n", ret);
 		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
-		goto out_unlock;
+		return ret;
 	}
 
-out_increment_refcount:
-	refcount_inc(&ch348->num_open_ports);
-
-out_unlock:
-	mutex_unlock(&ch348->manage_urbs_lock);
-
-	return ret;
+	return 0;
 }
 
 static void ch348_kill_urbs(struct usb_serial *serial)
 {
-	struct ch348 *ch348 = usb_get_serial_data(serial);
-
-	if (refcount_dec_and_mutex_lock(&ch348->num_open_ports,
-					&ch348->manage_urbs_lock)) {
-		usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
-		usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
-		mutex_unlock(&ch348->manage_urbs_lock);
-	}
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_STATUS_INT_CONFIG]);
+	usb_serial_generic_close(serial->port[CH348_PORTNUM_SERIAL_RX_TX]);
 }
 
 static void ch348_write_done(struct usb_serial_port *port)
@@ -567,10 +543,6 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	timer_setup(&ch348->ports[port->port_number].tx_timeout,
 		    ch348_tx_timeout, 0);
 
-	ret = ch348_submit_urbs(port->serial);
-	if (ret)
-		return ret;
-
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
 
@@ -578,21 +550,17 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
 			"Failed to configure R_C2_ACTIVATE: %d\n", ret);
-		goto err_kill_urbs;
+		return ret;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
 		dev_err(&port->serial->dev->dev,
 			"Failed to configure R_C4_ACTIVATE: %d\n", ret);
-		goto err_kill_urbs;
+		return ret;
 	}
 
 	return 0;
-
-err_kill_urbs:
-	ch348_kill_urbs(port->serial);
-	return ret;
 }
 
 static void ch348_close(struct usb_serial_port *port)
@@ -605,8 +573,6 @@ static void ch348_close(struct usb_serial_port *port)
 	spin_unlock_irqrestore(&port->lock, flags);
 
 	timer_shutdown_sync(&ch348->ports[port->port_number].tx_timeout);
-
-	ch348_kill_urbs(port->serial);
 }
 
 static int ch348_detect_version(struct usb_serial *serial)
@@ -665,9 +631,11 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->config_ep = usb_sndbulkpipe(serial->dev,
 					   config_port->bulk_out_endpointAddress);
 
-	mutex_init(&ch348->manage_urbs_lock);
-
 	ret = ch348_detect_version(serial);
+	if (ret)
+		goto err_free_ch348;
+
+	ret = ch348_submit_urbs(serial);
 	if (ret)
 		goto err_free_ch348;
 
@@ -683,6 +651,7 @@ static void ch348_release(struct usb_serial *serial)
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 
 	cancel_work_sync(&ch348->write_work);
+	ch348_kill_urbs(serial);
 
 	kfree(ch348);
 }
