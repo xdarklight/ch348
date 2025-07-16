@@ -11,9 +11,12 @@
  *   Copyright (C) 2025 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
+#include <linux/bitmap.h>
 #include <linux/bitops.h>
 #include <linux/cleanup.h>
+#include <linux/completion.h>
 #include <linux/errno.h>
+#include <linux/gpio/driver.h>
 #include <linux/kernel.h>
 #include <linux/kfifo.h>
 #include <linux/module.h>
@@ -72,6 +75,12 @@
 #define R_IO_I				0x9b
 #define R_TM_O				0x9c
 #define R_INIT				0xa1
+#define R_IO_CE				0xa3
+#define R_IO_CD				0xa4
+#define R_IO_CO				0xa5
+#define R_IO_CI				0xa7
+#define R_IO_RE				0xaa
+#define R_IO_RD				0xab
 
 /*
  * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for the 8
@@ -116,6 +125,8 @@ enum ch348_package {
 	CH348L, /* LQFP100 (large) */
 };
 
+#define CH348_NUM_GPIO				48
+
 /**
  * struct ch348 - main container for all this driver information
  * @read_urbs_users:		number of users (serial ports, GPIOs, ...)
@@ -123,12 +134,38 @@ enum ch348_package {
  * @read_urbs_lock:		protect against concurrent modification of
  *				read_urbs_users
  * @package_type:		indicates package type
+ * @gc:				gpio chip for GPIO access
+ * @gpiochip_registered:	indicates that the gpio chip was successfully
+ *				registered
+ * @gpio_value_lock:		avoids concurrent gpio_{enabled,direction,out_value}
+ *				access
+ * @gpio_enabled_mask:		bitmap of pins which are in GPIO mode
+ * @gpio_dir_mask:		bitmap of pins in output (1) or input mode (0)
+ * @gpio_out_mask:		bitmap of pins and their corresponding GPIO
+ *				output value
+ * @gpio_in_lock:		protects against concurrent hardware GPIO reads
+ * @gpio_in_completion:		indicates that the GPIO input values have been
+ *				provided by the hardware/firmware
+ * @gpio_in_mask:		bitmap of GPIOs and their input values
  */
 struct ch348 {
 	unsigned int read_urbs_users;
 	struct mutex read_urbs_lock;
 
 	enum ch348_package package_type;
+
+	struct gpio_chip gc;
+	const char *gpio_names[CH348_NUM_GPIO];
+	bool gpiochip_registered;
+
+	struct mutex gpio_value_lock;
+	DECLARE_BITMAP(gpio_enabled_mask, CH348_NUM_GPIO);
+	DECLARE_BITMAP(gpio_dir_mask, CH348_NUM_GPIO);
+	DECLARE_BITMAP(gpio_out_mask, CH348_NUM_GPIO);
+
+	struct mutex gpio_in_lock;
+	struct completion gpio_in_completion;
+	DECLARE_BITMAP(gpio_in_mask, CH348_NUM_GPIO);
 };
 
 struct ch348_config_buf {
@@ -163,6 +200,7 @@ struct ch348_status_entry {
 		u8 lsr;
 		u8 msr;
 		struct ch348_ven_r_msr ven_r_msr;
+		__le64 gpio_in_mask;
 		struct ch348_config_data_init init_data;
 	} data;
 } __packed;
@@ -174,6 +212,77 @@ enum ch348_status_action {
 	CH348_STATUS_ACTION_NONE,
 	CH348_STATUS_ACTION_UART_IIR_RLSI,
 	CH348_STATUS_ACTION_UART_IIR_THRI,
+	CH348_STATUS_ACTION_UPDATE_GPIO_IN,
+};
+
+enum ch348_gpio_direction {
+	CH348_GPIO_DIRECTION_CONFIGURABLE,
+	CH348_GPIO_DIRECTION_INPUT_ONLY,
+	CH348_GPIO_DIRECTION_OUTPUT_ONLY,
+};
+
+struct ch348_gpio_data {
+	u8 port_number;
+	enum ch348_gpio_direction direction;
+	const char *name;
+};
+
+#define CH348_GPIO_DATA(_gpio, _name, _port_number, _direction)	\
+	[_gpio] = {						\
+		.port_number = _port_number,			\
+		.direction = CH348_GPIO_DIRECTION_##_direction,	\
+		.name = _name #_port_number " / GPIO" #_gpio,	\
+	}
+
+static const struct ch348_gpio_data ch348_gpios[CH348_NUM_GPIO] = {
+	CH348_GPIO_DATA(0, "CTS", 0, INPUT_ONLY),
+	CH348_GPIO_DATA(1, "RTS", 0, OUTPUT_ONLY),
+	CH348_GPIO_DATA(2, "CTS", 1, INPUT_ONLY),
+	CH348_GPIO_DATA(3, "RTS", 1, OUTPUT_ONLY),
+	CH348_GPIO_DATA(4, "CTS", 2, INPUT_ONLY),
+	CH348_GPIO_DATA(5, "RTS", 2, OUTPUT_ONLY),
+	CH348_GPIO_DATA(6, "CTS", 3, INPUT_ONLY),
+	CH348_GPIO_DATA(7, "RTS", 3, OUTPUT_ONLY),
+	CH348_GPIO_DATA(8, "DTR", 0, CONFIGURABLE),
+	CH348_GPIO_DATA(9, "DTR", 1, CONFIGURABLE),
+	CH348_GPIO_DATA(10, "DTR", 2, CONFIGURABLE),
+	CH348_GPIO_DATA(11, "DTR", 3, CONFIGURABLE),
+	CH348_GPIO_DATA(12, "CTS", 4, INPUT_ONLY),
+	CH348_GPIO_DATA(13, "RTS", 4, OUTPUT_ONLY),
+	CH348_GPIO_DATA(14, "CTS", 5, INPUT_ONLY),
+	CH348_GPIO_DATA(15, "RTS", 5, OUTPUT_ONLY),
+	CH348_GPIO_DATA(16, "CTS", 6, INPUT_ONLY),
+	CH348_GPIO_DATA(17, "RTS", 6, OUTPUT_ONLY),
+	CH348_GPIO_DATA(18, "CTS", 7, INPUT_ONLY),
+	CH348_GPIO_DATA(19, "RTS", 7, OUTPUT_ONLY),
+	CH348_GPIO_DATA(20, "DTR", 4, CONFIGURABLE),
+	CH348_GPIO_DATA(21, "DTR", 5, CONFIGURABLE),
+	CH348_GPIO_DATA(22, "DTR", 6, CONFIGURABLE),
+	CH348_GPIO_DATA(23, "DTR", 7, CONFIGURABLE),
+	CH348_GPIO_DATA(24, "DSR", 0, INPUT_ONLY),
+	CH348_GPIO_DATA(25, "RI", 0, INPUT_ONLY),
+	CH348_GPIO_DATA(26, "DCD", 0, INPUT_ONLY),
+	CH348_GPIO_DATA(27, "DSR", 1, INPUT_ONLY),
+	CH348_GPIO_DATA(28, "RI", 1, INPUT_ONLY),
+	CH348_GPIO_DATA(29, "DCD", 1, INPUT_ONLY),
+	CH348_GPIO_DATA(30, "DSR", 2, INPUT_ONLY),
+	CH348_GPIO_DATA(31, "DCD", 2, INPUT_ONLY),
+	CH348_GPIO_DATA(32, "RI", 2, INPUT_ONLY),
+	CH348_GPIO_DATA(33, "DSR", 3, INPUT_ONLY),
+	CH348_GPIO_DATA(34, "DCD", 3, INPUT_ONLY),
+	CH348_GPIO_DATA(35, "RI", 3, INPUT_ONLY),
+	CH348_GPIO_DATA(36, "DSR", 4, INPUT_ONLY),
+	CH348_GPIO_DATA(37, "DCD", 4, INPUT_ONLY),
+	CH348_GPIO_DATA(38, "RI", 4, INPUT_ONLY),
+	CH348_GPIO_DATA(39, "DSR", 5, INPUT_ONLY),
+	CH348_GPIO_DATA(40, "DCD", 5, INPUT_ONLY),
+	CH348_GPIO_DATA(41, "RI", 5, INPUT_ONLY),
+	CH348_GPIO_DATA(42, "DSR", 6, INPUT_ONLY),
+	CH348_GPIO_DATA(43, "DCD", 6, INPUT_ONLY),
+	CH348_GPIO_DATA(44, "RI", 6, INPUT_ONLY),
+	CH348_GPIO_DATA(45, "DSR", 7, INPUT_ONLY),
+	CH348_GPIO_DATA(46, "DCD", 7, INPUT_ONLY),
+	CH348_GPIO_DATA(47, "RI", 7, INPUT_ONLY),
 };
 
 static void ch348_kill_port_read_urbs(struct usb_serial_port *port)
@@ -341,6 +450,12 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			i += sizeof(status_entry->data.init_data);
 		} else if (status_entry->reg_iir == VEN_R) {
 			i += sizeof(status_entry->data.ven_r_msr);
+		} else if (status_entry->reg_iir == R_IO_CI) {
+			i += sizeof(status_entry->data.gpio_in_mask);
+			action = CH348_STATUS_ACTION_UPDATE_GPIO_IN;
+		} else if (status_entry->reg_iir == R_IO_CD ||
+			   status_entry->reg_iir == R_IO_CO) {
+			i += sizeof(status_entry->data.unknown);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			i += sizeof(status_entry->data.lsr);
 			action = CH348_STATUS_ACTION_UART_IIR_RLSI;
@@ -374,6 +489,14 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 				port->icount.brk++;
 		} else if (action == CH348_STATUS_ACTION_UART_IIR_THRI) {
 			ch348_write_done(port);
+		} else if (action == CH348_STATUS_ACTION_UPDATE_GPIO_IN) {
+			u64 val = le64_to_cpu(status_entry->data.gpio_in_mask);
+			struct ch348 *ch348 = usb_get_serial_data(serial);
+
+			bitmap_from_arr64(ch348->gpio_in_mask, &val,
+					  ch348->gc.ngpio);
+
+			complete_all(&ch348->gpio_in_completion);
 		}
 	}
 }
@@ -481,6 +604,15 @@ static int ch348_write_config(struct usb_serial *serial, u8 cmd, u8 reg,
 	kfree(buf);
 
 	return ret < 0 ? ret : 0;
+}
+
+static int ch348_write_config_be64(struct usb_serial *serial, u8 cmd, u8 reg,
+				   u64 val)
+{
+	__be64 config_val = cpu_to_be64(val);
+
+	return ch348_write_config(serial, cmd, reg, &config_val,
+				  sizeof(config_val));
 }
 
 static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
@@ -736,6 +868,246 @@ static int ch348_detect_version(struct usb_serial *serial)
 	return 0;
 }
 
+static int ch348_gpio_set_enabled(struct gpio_chip *gc, unsigned int offset,
+				  bool enable)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	u64 val;
+
+	guard(mutex)(&ch348->gpio_value_lock);
+
+	if (enable)
+		set_bit(offset, ch348->gpio_enabled_mask);
+	else
+		clear_bit(offset, ch348->gpio_enabled_mask);
+
+	bitmap_to_arr64(&val, ch348->gpio_enabled_mask, gc->ngpio);
+
+	return ch348_write_config_be64(serial, R_MOD, R_IO_CE, val);
+}
+
+static int ch348_gpio_request(struct gpio_chip *gc, unsigned int offset)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	int ret;
+
+	ret = usb_autopm_get_interface(serial->interface);
+	if (ret)
+		return ret;
+
+	ret = ch348_read_urbs_get(serial, GFP_KERNEL);
+	if (ret)
+		goto err_autopm_put;
+
+	ret = ch348_gpio_set_enabled(gc, offset, true);
+	if (ret)
+		goto err_read_urbs_put;
+
+	return 0;
+
+err_read_urbs_put:
+	ch348_read_urbs_put(serial);
+err_autopm_put:
+	usb_autopm_put_interface(serial->interface);
+	return ret;
+}
+
+static void ch348_gpio_free(struct gpio_chip *gc, unsigned int offset)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+
+	ch348_gpio_set_enabled(gc, offset, false);
+	ch348_read_urbs_put(serial);
+	usb_autopm_put_interface(serial->interface);
+}
+
+static int ch348_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	bool is_output;
+
+	if (ch348_gpios[offset].direction == CH348_GPIO_DIRECTION_INPUT_ONLY)
+		return GPIO_LINE_DIRECTION_IN;
+
+	if (ch348_gpios[offset].direction == CH348_GPIO_DIRECTION_OUTPUT_ONLY)
+		return GPIO_LINE_DIRECTION_OUT;
+
+	scoped_guard(mutex, &ch348->gpio_value_lock)
+		is_output = test_bit(offset, ch348->gpio_dir_mask);
+
+	return is_output ? GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
+}
+
+static int ch348_gpio_set_direction(struct gpio_chip *gc, unsigned int offset,
+				    unsigned int direction)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	u64 val;
+
+	guard(mutex)(&ch348->gpio_value_lock);
+
+	if (direction == GPIO_LINE_DIRECTION_OUT)
+		set_bit(offset, ch348->gpio_dir_mask);
+	else
+		clear_bit(offset, ch348->gpio_dir_mask);
+
+	bitmap_to_arr64(&val, ch348->gpio_dir_mask, gc->ngpio);
+
+	return ch348_write_config_be64(serial, R_MOD, R_IO_CD, val);
+}
+
+static int ch348_gpio_direction_input(struct gpio_chip *gc, unsigned int offset)
+{
+	if (ch348_gpios[offset].direction == CH348_GPIO_DIRECTION_OUTPUT_ONLY)
+		return -EINVAL;
+
+	return ch348_gpio_set_direction(gc, offset, GPIO_LINE_DIRECTION_IN);
+}
+
+static int ch348_gpio_direction_output(struct gpio_chip *gc,
+				       unsigned int offset, int value)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	int ret;
+
+	if (ch348_gpios[offset].direction == CH348_GPIO_DIRECTION_INPUT_ONLY)
+		return -EINVAL;
+
+	ret = ch348_gpio_set_direction(gc, offset, GPIO_LINE_DIRECTION_OUT);
+	if (ret)
+		return ret;
+
+	return ch348->gc.set(gc, offset, value);
+}
+
+static int ch348_gpio_get(struct gpio_chip *gc, unsigned int offset)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	DECLARE_BITMAP(mask, CH348_NUM_GPIO) = { 0 };
+	DECLARE_BITMAP(bits, CH348_NUM_GPIO) = { 0 };
+	int ret;
+
+	set_bit(offset, mask);
+
+	ret = ch348->gc.get_multiple(gc, mask, bits);
+	if (ret)
+		return ret;
+
+	return test_bit(offset, bits);
+}
+
+static int ch348_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	DECLARE_BITMAP(mask, CH348_NUM_GPIO) = { 0 };
+	DECLARE_BITMAP(bits, CH348_NUM_GPIO) = { 0 };
+
+	set_bit(offset, mask);
+
+	if (value)
+		set_bit(offset, bits);
+
+	return ch348->gc.set_multiple(gc, mask, bits);
+}
+
+static int ch348_gpio_get_multiple(struct gpio_chip *gc, unsigned long *mask,
+				   unsigned long *bits)
+{
+	unsigned long jiffies = msecs_to_jiffies(CH348_CMD_TIMEOUT);
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	int ret;
+
+	guard(mutex)(&ch348->gpio_in_lock);
+
+	reinit_completion(&ch348->gpio_in_completion);
+
+	ret = ch348_write_config(serial, R_MOD, R_IO_CI, NULL, 0);
+	if (ret)
+		return ret;
+
+	if (!wait_for_completion_timeout(&ch348->gpio_in_completion, jiffies))
+		return -ETIMEDOUT;
+
+	bitmap_and(bits, ch348->gpio_in_mask, mask, gc->ngpio);
+
+	return 0;
+}
+
+static int ch348_gpio_set_multiple(struct gpio_chip *gc, unsigned long *mask,
+				   unsigned long *bits)
+{
+	struct usb_serial *serial = gpiochip_get_data(gc);
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	u64 val;
+
+	guard(mutex)(&ch348->gpio_value_lock);
+
+	bitmap_replace(ch348->gpio_out_mask, ch348->gpio_out_mask, bits, mask,
+		       gc->ngpio);
+
+	bitmap_to_arr64(&val, ch348->gpio_out_mask, gc->ngpio);
+
+	return ch348_write_config_be64(serial, R_MOD, R_IO_CO, val);
+}
+
+static void ch348_gpio_add(struct usb_serial *serial)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	unsigned int i;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_GPIOLIB))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(ch348->gpio_names); i++)
+		ch348->gpio_names[i] = ch348_gpios[i].name;
+
+	ch348->gc.request = ch348_gpio_request;
+	ch348->gc.free = ch348_gpio_free;
+	ch348->gc.get_direction = ch348_gpio_get_direction;
+	ch348->gc.direction_input = ch348_gpio_direction_input;
+	ch348->gc.direction_output = ch348_gpio_direction_output;
+	ch348->gc.get = ch348_gpio_get;
+	ch348->gc.set = ch348_gpio_set;
+	ch348->gc.get_multiple = ch348_gpio_get_multiple;
+	ch348->gc.set_multiple = ch348_gpio_set_multiple;
+	ch348->gc.owner = THIS_MODULE;
+	ch348->gc.parent = &serial->dev->dev;
+	ch348->gc.base = -1;
+	ch348->gc.can_sleep = true;
+	ch348->gc.names = ch348->gpio_names;
+
+	if (ch348->package_type == CH348Q) {
+		ch348->gc.ngpio = 12;
+		ch348->gc.label = "CH348Q";
+	} else {
+		ch348->gc.ngpio = CH348_NUM_GPIO;
+		ch348->gc.label = "CH348L";
+	}
+
+	ret = gpiochip_add_data(&ch348->gc, serial);
+	if (ret)
+		dev_err(&serial->dev->dev, "Failed to add GPIO chip: %d\n",
+			ret);
+	else
+		ch348->gpiochip_registered = true;
+}
+
+static void ch348_gpio_remove(struct usb_serial *serial)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+
+	if (IS_ENABLED(CONFIG_GPIOLIB) && ch348->gpiochip_registered)
+		gpiochip_remove(&ch348->gc);
+}
+
 static int ch348_attach(struct usb_serial *serial)
 {
 	struct ch348 *ch348;
@@ -748,10 +1120,16 @@ static int ch348_attach(struct usb_serial *serial)
 	usb_set_serial_data(serial, ch348);
 
 	mutex_init(&ch348->read_urbs_lock);
+	mutex_init(&ch348->gpio_value_lock);
+	mutex_init(&ch348->gpio_in_lock);
+
+	init_completion(&ch348->gpio_in_completion);
 
 	ret = ch348_detect_version(serial);
 	if (ret)
 		goto err_free_ch348;
+
+	ch348_gpio_add(serial);
 
 	return 0;
 
@@ -764,6 +1142,10 @@ static void ch348_release(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 
+	ch348_gpio_remove(serial);
+
+	mutex_destroy(&ch348->gpio_in_lock);
+	mutex_destroy(&ch348->gpio_value_lock);
 	mutex_destroy(&ch348->read_urbs_lock);
 
 	kfree(ch348);
