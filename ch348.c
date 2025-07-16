@@ -129,8 +129,8 @@ struct ch348_port {
 
 /**
  * struct ch348 - main container for all this driver information
- * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
+ * @ports:		List of per-port information
  * @write_work:		worker for processing the write queues
  * @tx_ep:		endpoint number for serial data transmit/write operation
  * @config_ep:		endpoint number for configure operations
@@ -139,8 +139,8 @@ struct ch348_port {
  * @package_type:	indicates package type
  */
 struct ch348 {
-	struct ch348_port ports[CH348_MAXPORT];
 	struct usb_serial *serial;
+	struct ch348_port ports[CH348_MAXPORT];
 
 	struct work_struct write_work;
 
@@ -235,8 +235,8 @@ static void ch348_kill_urbs(struct usb_serial *serial)
 
 static void ch348_write_done(struct usb_serial_port *port)
 {
+	struct ch348_port *ch348_p = usb_get_serial_port_data(port);
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	struct ch348_port *ch348_p = &ch348->ports[port->port_number];
 
 	timer_delete(&ch348_p->tx_timeout);
 
@@ -259,6 +259,7 @@ static void ch348_write_work(struct work_struct *work)
 {
 	struct ch348 *ch348 = container_of(work, struct ch348, write_work);
 	struct usb_serial_port *port, *hw_tx_port;
+	struct ch348_port *ch348_p;
 	struct ch348_txbuf *rxt;
 	unsigned int i, count;
 	unsigned long flags;
@@ -269,8 +270,9 @@ static void ch348_write_work(struct work_struct *work)
 
 	for (i = 0; i < CH348_MAXPORT; i++) {
 		port = ch348->serial->port[i];
+		ch348_p = usb_get_serial_port_data(port);
 
-		if (timer_pending(&ch348->ports[i].tx_timeout)) {
+		if (timer_pending(&ch348_p->tx_timeout)) {
 			/* Previous TX is still pending */
 			continue;
 		}
@@ -296,7 +298,7 @@ static void ch348_write_work(struct work_struct *work)
 				      count + CH348_TX_HDRSIZE,
 				      (const unsigned char *)rxt);
 
-		mod_timer(&ch348->ports[port->port_number].tx_timeout,
+		mod_timer(&ch348_p->tx_timeout,
 			  jiffies + msecs_to_jiffies(CH348_CMD_TIMEOUT * 2));
 
 		ret = usb_bulk_msg(ch348->serial->dev, ch348->tx_ep, rxt,
@@ -487,11 +489,12 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 				   struct ktermios *termios,
 				   const struct ktermios *termios_old)
 {
+	struct ch348_port *ch348_p = usb_get_serial_port_data(port);
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	bool hw_flow_control = !!(termios->c_cflag & CRTSCTS);
 	int ret;
 
-	if (ch348->ports[port->port_number].hw_flow_control == hw_flow_control)
+	if (ch348_p->hw_flow_control == hw_flow_control)
 		return;
 
 	if (hw_flow_control && ch348->package_type == CH348Q &&
@@ -514,12 +517,13 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 		return;
 	}
 
-	ch348->ports[port->port_number].hw_flow_control = hw_flow_control;
+	ch348_p->hw_flow_control = hw_flow_control;
 }
 
 static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *port,
 			      const struct ktermios *termios_old)
 {
+	struct ch348_port *ch348_p = usb_get_serial_port_data(port);
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	struct ch348_config_data_init config = {};
 	struct ktermios *termios = &tty->termios;
@@ -537,7 +541,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	 */
 	baudrate = clamp(tty_get_baud_rate(tty), 1200, 6000000);
 	tty_termios_encode_baud_rate(&tty->termios, baudrate, baudrate);
-	ch348->ports[port->port_number].baudrate = baudrate;
+	ch348_p->baudrate = baudrate;
 
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
@@ -625,12 +629,7 @@ static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	int ret;
-
-	ch348->ports[port->port_number].port = port;
-	timer_setup(&ch348->ports[port->port_number].tx_timeout,
-		    ch348_tx_timeout, 0);
 
 	ret = ch348_submit_urbs(port->serial);
 	if (ret)
@@ -662,16 +661,29 @@ err_kill_urbs:
 
 static void ch348_close(struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	struct ch348_port *ch348_p = usb_get_serial_port_data(port);
 	unsigned long flags;
 
 	spin_lock_irqsave(&port->lock, flags);
 	kfifo_reset_out(&port->write_fifo);
 	spin_unlock_irqrestore(&port->lock, flags);
 
-	timer_shutdown_sync(&ch348->ports[port->port_number].tx_timeout);
+	timer_shutdown_sync(&ch348_p->tx_timeout);
 
 	ch348_kill_urbs(port->serial);
+}
+
+static int ch348_port_probe(struct usb_serial_port *port)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	struct ch348_port *ch348_p = &ch348->ports[port->port_number];
+
+	ch348_p->port = port;
+	timer_setup(&ch348_p->tx_timeout, ch348_tx_timeout, 0);
+
+	usb_set_serial_port_data(port, ch348_p);
+
+	return 0;
 }
 
 static int ch348_detect_version(struct usb_serial *serial)
@@ -806,6 +818,7 @@ static struct usb_serial_driver ch348_device = {
 	.process_read_urb =	ch348_process_read_urb,
 	.write =		ch348_write,
 	.calc_num_ports =	ch348_calc_num_ports,
+	.port_probe =		ch348_port_probe,
 	.attach =		ch348_attach,
 	.release =		ch348_release,
 	.suspend =		ch348_suspend,
