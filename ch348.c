@@ -805,6 +805,7 @@ static struct usb_serial_driver ch348_device = {
 	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write =		ch348_write,
+	.get_icount =		usb_serial_generic_get_icount,
 	.calc_num_ports =	ch348_calc_num_ports,
 	.attach =		ch348_attach,
 	.release =		ch348_release,
