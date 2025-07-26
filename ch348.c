@@ -51,13 +51,7 @@
 #define R_C3		0x03
 
 #define R_C4		0x04
-#define R_C4_UNKNOWN00	0x00 /* no official documentation available */
-#define R_C4_UNKNOWN01	0x01 /* no official documentation available */
-#define R_C4_UNKNOWN10	0x10 /* no official documentation available */
-#define R_C4_UNKNOWN11	0x11 /* no official documentation available */
 #define R_C4_ACTIVATE	0x08 /* no official documentation available */
-#define R_C4_HW_FLOW	0x50
-#define R_C4_NO_RTS	0x51 /* no official documentation, name is a guess */
 
 #define R_C5		0x06
 #define R_MOD		0x97
@@ -514,40 +508,6 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static void ch348_set_flow_control(struct usb_serial_port *port,
-				   struct ktermios *termios,
-				   const struct ktermios *termios_old)
-{
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	bool hw_flow_control = !!(termios->c_cflag & CRTSCTS);
-	int ret;
-
-	if (ch348->ports[port->port_number].hw_flow_control == hw_flow_control)
-		return;
-
-	if (hw_flow_control && ch348->package_type == CH348Q &&
-	    port->port_number >= 4) {
-		dev_err(&ch348->serial->dev->dev,
-			"Flow control is not supported on CH348Q port %u\n",
-			port->port_number);
-		termios->c_cflag &= ~CRTSCTS;
-		return;
-	}
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4,
-				hw_flow_control ? R_C4_HW_FLOW : R_C4_NO_RTS);
-	if (ret) {
-		if (termios_old) {
-			termios->c_cflag &= ~CRTSCTS;
-			termios->c_cflag |= (termios_old->c_cflag & CRTSCTS);
-		}
-
-		return;
-	}
-
-	ch348->ports[port->port_number].hw_flow_control = hw_flow_control;
-}
-
 static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *port,
 			      const struct ktermios *termios_old)
 {
@@ -620,44 +580,8 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 			tty->termios = *termios_old;
 	}
 
-	ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_UNKNOWN01);
-	if (ret)
-		dev_err(&port->serial->dev->dev,
-			"Failed to configure R_C4_UNKNOWN01: %d\n", ret);
-
 	ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 			  UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
-
-	ch348_set_flow_control(port, termios, termios_old);
-
-	ch348_port_config(port, CMD_WB_E, 0x85 /* VEN_R */, 0x6);
-}
-
-static void ch348_dtr_rts(struct usb_serial_port *port, int on)
-{
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	int ret;
-
-	/*
-	 * Only the first four ports have the modem control pins routed outside
-	 * the package.
-	 */
-	if (ch348->package_type == CH348Q && port->port_number >= 4) {
-		dev_dbg(&port->serial->dev->dev,
-			"DTR/RTS is not supported on CH348Q port %u\n",
-			port->port_number);
-		return;
-	}
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_UNKNOWN01);
-	if (ret)
-		dev_err(&port->serial->dev->dev,
-			"Failed to configure R_C4_UNKNOWN01: %d\n", ret);
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4, R_C4_UNKNOWN11);
-	if (ret)
-		dev_err(&port->serial->dev->dev,
-			"Failed to configure R_C4_UNKNOWN11: %d\n", ret);
 }
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
@@ -848,7 +772,6 @@ static struct usb_serial_driver ch348_device = {
 	.open =			ch348_open,
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
-	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
