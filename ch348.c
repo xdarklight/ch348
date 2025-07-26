@@ -704,7 +704,25 @@ static int ch348_attach(struct usb_serial *serial)
 {
 	struct usb_serial_port *config_port;
 	struct ch348 *ch348;
-	int ret;
+	int i, ret;
+
+	for (i = 0; i < serial->type->num_bulk_in; i++) {
+		if (serial->port[i]->bulk_in_size < 32) {
+			dev_dbg(&serial->dev->dev,
+				"size of bulk in endpoint %d is too short: %d bytes\n",
+				i, serial->port[i]->bulk_in_size);
+			return -ENODEV;
+		}
+	}
+
+	for (i = 0; i < serial->type->num_bulk_out; i++) {
+		if (serial->port[i]->bulk_out_size < 32) {
+			dev_dbg(&serial->dev->dev,
+				"size of bulk out endpoint %d is too short: %d bytes\n",
+				i, serial->port[i]->bulk_out_size);
+			return -ENODEV;
+		}
+	}
 
 	ch348 = kzalloc(sizeof(*ch348), GFP_KERNEL);
 	if (!ch348)
