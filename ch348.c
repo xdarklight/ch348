@@ -27,43 +27,44 @@
 #include <linux/usb/serial.h>
 #include <linux/workqueue.h>
 
-#define CH348_CMD_TIMEOUT   2000
+#define CH348_CMD_TIMEOUT		2000
 
-#define CH348_CTO_D	0x01
-#define CH348_CTO_R	0x02
+#define CH348_CTO_D			0x01
+#define CH348_CTO_R			0x02
 
-#define CH348_CTI_C	0x10
-#define CH348_CTI_DSR	0x20
-#define CH348_CTI_R	0x40
-#define CH348_CTI_DCD	0x80
+#define CH348_CTI_C			0x10
+#define CH348_CTI_DSR			0x20
+#define CH348_CTI_R			0x40
+#define CH348_CTI_DCD			0x80
 
-#define CMD_W_R		0xc0
-#define CMD_W_BR	0x80
+#define CMD_W_R				0xc0
+#define CMD_W_BR			0x80
 
-#define CMD_WB_E	0x90
-#define CMD_RB_E	0xc0
+#define CMD_WB_E			0x90
+#define CMD_RB_E			0xc0
 
 /* R_C1 = 0x01 is UART_IER compatible */
 
-#define R_C2		0x02
-#define R_C2_ACTIVATE	0x87
+#define R_C2				0x02
+#define R_C2_ACTIVATE			0x87
 
-#define R_C3		0x03
+#define R_C3				0x03
 
-#define R_C4		0x04
-#define R_C4_ACTIVATE	0x08
-#define R_C4_HW_FLOW	0x50
-#define R_C4_NO_RTS	0x51 /* no official documentation, name is a guess */
+#define R_C4				0x04
+#define R_C4_ACTIVATE			0x08
+#define R_C4_HW_FLOW			0x50
+#define R_C4_NO_RTS			0x51 /* no official documentation, name is a guess */
 
-#define R_C5		0x06
-#define R_MOD		0x97
-#define R_IO_D		0x98
-#define R_IO_O		0x99
-#define R_IO_I		0x9b
-#define R_TM_O		0x9c
-#define R_INIT		0xa1
+#define R_C5				0x06
 
-#define CMD_VER		0x96
+#define CMD_VER				0x96
+
+#define R_MOD				0x97
+#define R_IO_D				0x98
+#define R_IO_O				0x99
+#define R_IO_I				0x9b
+#define R_TM_O				0x9c
+#define R_INIT				0xa1
 
 /*
  * The CH348 multiplexes rx & tx into a pair of Bulk USB endpoints for the 8
