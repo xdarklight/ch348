@@ -465,7 +465,7 @@ static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
 
 	ret = ch348_write_config(ch348, cmd, reg, &control, sizeof(control));
 	if (ret < 0)
-		dev_err(&ch348->serial->dev->dev,
+		dev_err(&port->dev,
 			"Failed to write port config: %d\n", ret);
 
 	return ret;
@@ -586,8 +586,8 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ret = ch348_write_config(ch348, CMD_WB_E | portnum, R_INIT, &config,
 				 sizeof(config));
 	if (ret < 0) {
-		dev_err(&ch348->serial->dev->dev,
-			"Failed to change line settings: %d\n", ret);
+		dev_err(&port->dev, "Failed to change line settings: %d\n",
+			ret);
 		if (termios_old)
 			tty->termios = *termios_old;
 	}
@@ -647,15 +647,15 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
 	if (ret) {
-		dev_err(&port->serial->dev->dev,
-			"Failed to configure R_C2_ACTIVATE: %d\n", ret);
+		dev_err(&port->dev, "Failed to configure R_C2_ACTIVATE: %d\n",
+			ret);
 		goto err_kill_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
-		dev_err(&port->serial->dev->dev,
-			"Failed to configure R_C4_ACTIVATE: %d\n", ret);
+		dev_err(&port->dev, "Failed to configure R_C4_ACTIVATE: %d\n",
+			ret);
 		goto err_kill_urbs;
 	}
 
