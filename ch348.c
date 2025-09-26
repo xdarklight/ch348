@@ -704,33 +704,24 @@ static void ch348_close(struct usb_serial_port *port)
 static int ch348_detect_version(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
-	u8 *version_buf;
+	u8 version_buf[4];
 	int ret;
 
-	version_buf = kzalloc(4, GFP_KERNEL);
-	if (!version_buf)
-		return -ENOMEM;
-
-	ret = usb_control_msg(serial->dev, usb_rcvctrlpipe(serial->dev, 0),
-			      CMD_VER,
-			      USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_IN,
-			      0, 0, version_buf, 4, CH348_CMD_TIMEOUT);
-	if (ret < 0) {
+	ret = usb_control_msg_recv(serial->dev, 0, CMD_VER,
+				   USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_IN,
+				   0, 0, version_buf, sizeof(version_buf),
+				   CH348_CMD_TIMEOUT, GFP_KERNEL);
+	if (ret) {
 		dev_err(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
-		goto out;
+		return ret;
 	}
-
-	ret = 0;
 
 	ch348->package_type = (version_buf[1] & 0x80) ? CH348Q : CH348L;
 
 	dev_info(&serial->dev->dev, "Found WCH CH348%c version 0x%02x\n",
 		 ch348->package_type == CH348Q ? 'Q' : 'L', version_buf[0]);
 
-out:
-	kfree(version_buf);
-
-	return ret;
+	return 0;
 }
 
 static int ch348_attach(struct usb_serial *serial)
