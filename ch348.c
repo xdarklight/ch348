@@ -658,6 +658,13 @@ static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 		dev_err(&port->dev, "Failed to write VEN_R: %d\n", ret);
 }
 
+static bool ch348_tx_empty(struct usb_serial_port *port)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+
+	return !ch348->ports[port->port_number].tx_pending;
+}
+
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
@@ -851,6 +858,7 @@ static struct usb_serial_driver ch348_device = {
 	.set_termios =		ch348_set_termios,
 	.break_ctl =		ch348_break_ctl,
 	.dtr_rts =		ch348_dtr_rts,
+	.tx_empty =		ch348_tx_empty,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
