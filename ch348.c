@@ -694,9 +694,21 @@ err_kill_read_urbs:
 static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	struct usb_serial_port *tx_port;
+	unsigned int i;
 
 	scoped_guard(spinlock_irqsave, &port->lock)
 		kfifo_reset_out(&port->write_fifo);
+
+	if (port->port_number == CH348_PORTNUM_SERIAL_RX_TX ||
+	    port->port_number == CH348_PORTNUM_STATUS_INT_CONFIG) {
+		/* see ch348_write_work() for more info about this mapping */
+		tx_port = port->serial->port[CH348_PORTNUM_SERIAL_RX_TX];
+		usb_kill_urb(tx_port->write_urbs[port->port_number]);
+	} else {
+		for (i = 0; i < ARRAY_SIZE(port->write_urbs); ++i)
+			usb_kill_urb(port->write_urbs[i]);
+	}
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
 		clear_bit(port->port_number, ch348->open_ports);
