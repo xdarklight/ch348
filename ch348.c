@@ -815,5 +815,6 @@ static struct usb_serial_driver * const serial_drivers[] = {
 module_usb_serial_driver(serial_drivers, ch348_ids);
 
 MODULE_AUTHOR("Corentin Labbe <clabbe@baylibre.com>");
+MODULE_AUTHOR("Martin Blumenstingl <martin.blumenstingl@googlemail.com>");
 MODULE_DESCRIPTION("USB CH348 Octo port serial converter driver");
 MODULE_LICENSE("GPL");
