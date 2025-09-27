@@ -227,7 +227,6 @@ static void ch348_write_work(struct work_struct *work)
 	struct usb_serial_port *tx_port, *port;
 	struct ch348_txbuf *txb;
 	unsigned int i, count;
-	unsigned long flags;
 	struct urb *urb;
 	int ret;
 
@@ -266,9 +265,8 @@ static void ch348_write_work(struct work_struct *work)
 		txb->port = port->port_number;
 		txb->length = cpu_to_le16(count);
 
-		spin_lock_irqsave(&port->lock, flags);
-		port->tx_bytes += count;
-		spin_unlock_irqrestore(&port->lock, flags);
+		scoped_guard(spinlock_irqsave, &port->lock)
+			port->tx_bytes += count;
 
 		usb_serial_debug_data(&port->dev, __func__,
 				      urb->transfer_buffer_length,
@@ -281,9 +279,8 @@ static void ch348_write_work(struct work_struct *work)
 			dev_err_console(port, "Failed to submit TX urb: %d\n",
 					ret);
 
-			spin_lock_irqsave(&port->lock, flags);
-			port->tx_bytes -= count;
-			spin_unlock_irqrestore(&port->lock, flags);
+			scoped_guard(spinlock_irqsave, &port->lock)
+				port->tx_bytes -= count;
 
 			ch348_write_done(port);
 		}
@@ -402,13 +399,11 @@ static void ch348_write_bulk_callback(struct urb *urb)
 	struct usb_serial_port *port, *tx_port = urb->context;
 	struct ch348_txbuf *txb = urb->transfer_buffer;
 	u16 length = le16_to_cpu(txb->length);
-	unsigned long flags;
 
 	port = tx_port->serial->port[txb->port];
 
-	spin_lock_irqsave(&port->lock, flags);
-	port->tx_bytes -= length;
-	spin_unlock_irqrestore(&port->lock, flags);
+	scoped_guard(spinlock_irqsave, &port->lock)
+		port->tx_bytes -= length;
 
 	switch (urb->status) {
 	case 0:
@@ -687,11 +682,9 @@ err_kill_urbs:
 static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	unsigned long flags;
 
-	spin_lock_irqsave(&port->lock, flags);
-	kfifo_reset_out(&port->write_fifo);
-	spin_unlock_irqrestore(&port->lock, flags);
+	scoped_guard(spinlock_irqsave, &port->lock)
+		kfifo_reset_out(&port->write_fifo);
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
 		clear_bit(port->port_number, ch348->open_ports);
