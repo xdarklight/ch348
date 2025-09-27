@@ -42,7 +42,10 @@
 #define R_C2				0x02
 #define R_C2_ACTIVATE			0x87
 
+/* no official documentation available for R_C3 */
 #define R_C3				0x03
+#define R_C3_BREAK_OFF			0x60
+#define R_C3_BREAK_ON			0x61
 
 /* no official documentation available for R_C4 */
 #define R_C4				0x04
@@ -595,6 +598,14 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ch348_set_flow_control(port, termios, termios_old);
 }
 
+static int ch348_break_ctl(struct tty_struct *tty, int on)
+{
+	struct usb_serial_port *port = tty->driver_data;
+
+	return ch348_port_config(port, CMD_W_BR, R_C3,
+				 on ? R_C3_BREAK_ON : R_C3_BREAK_OFF);
+}
+
 static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
@@ -793,6 +804,7 @@ static struct usb_serial_driver ch348_device = {
 	.open =			ch348_open,
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
+	.break_ctl =		ch348_break_ctl,
 	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
