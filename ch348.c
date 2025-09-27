@@ -126,7 +126,6 @@ struct ch348_port {
  * @ports:		List of per-port information
  * @serial:		pointer to the serial structure
  * @write_work:		worker for processing the write queues
- * @config_ep:		endpoint number for configure operations
  * @open_ports:		bitmap of ports that are currently opened
  * @open_ports_lock:	protect against concurrent modification of open_ports
  * @package_type:	indicates package type
@@ -136,8 +135,6 @@ struct ch348 {
 	struct usb_serial *serial;
 
 	struct work_struct write_work;
-
-	int config_ep;
 
 	DECLARE_BITMAP(open_ports, CH348_MAXPORT);
 	struct mutex open_ports_lock;
@@ -431,9 +428,10 @@ static void ch348_write_bulk_callback(struct urb *urb)
 static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
 			      size_t len)
 {
+	struct usb_serial_port *config_port;
 	struct ch348_config_buf *buf;
+	int config_pipe, ret;
 	size_t buf_len;
-	int ret;
 
 	buf_len = struct_size(buf, data, len);
 
@@ -447,8 +445,12 @@ static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
 	if (len)
 		memcpy(buf->data, data, len);
 
-	ret = usb_bulk_msg(ch348->serial->dev, ch348->config_ep, buf, buf_len,
-			   NULL, CH348_CMD_TIMEOUT);
+	config_port = ch348->serial->port[CH348_PORTNUM_STATUS_INT_CONFIG];
+	config_pipe = usb_sndbulkpipe(ch348->serial->dev,
+				      config_port->bulk_out_endpointAddress);
+
+	ret = usb_bulk_msg(ch348->serial->dev, config_pipe, buf, buf_len, NULL,
+			   CH348_CMD_TIMEOUT);
 
 	kfree(buf);
 
@@ -719,7 +721,6 @@ static int ch348_detect_version(struct usb_serial *serial)
 
 static int ch348_attach(struct usb_serial *serial)
 {
-	struct usb_serial_port *config_port;
 	struct ch348 *ch348;
 	int ret;
 
@@ -732,10 +733,6 @@ static int ch348_attach(struct usb_serial *serial)
 	ch348->serial = serial;
 
 	INIT_WORK(&ch348->write_work, ch348_write_work);
-
-	config_port = ch348->serial->port[CH348_PORTNUM_STATUS_INT_CONFIG];
-	ch348->config_ep = usb_sndbulkpipe(serial->dev,
-					   config_port->bulk_out_endpointAddress);
 
 	devm_mutex_init(&serial->dev->dev, &ch348->open_ports_lock);
 
