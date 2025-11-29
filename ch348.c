@@ -811,7 +811,6 @@ MODULE_DEVICE_TABLE(usb, ch348_ids);
 
 static struct usb_serial_driver ch348_device = {
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "ch348",
 	},
 	.id_table =		ch348_ids,
