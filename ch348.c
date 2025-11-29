@@ -213,28 +213,21 @@ static void ch348_kill_read_urbs(struct usb_serial *serial)
 	ch348_kill_port_read_urbs(serial->port[CH348_PORTNUM_SERIAL_RX]);
 }
 
-static void ch348_write_done(struct usb_serial_port *port, bool success)
+static void ch348_tx_done(struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	bool tx_more;
+	int tx_bytes;
 
-	scoped_guard(spinlock_irqsave, &port->lock) {
-		if (success)
-			port->icount.tx += (port->tx_bytes - CH348_TX_HDRSIZE);
+	scoped_guard(spinlock_irqsave, &port->lock)
+		tx_bytes = port->tx_bytes;
 
-		port->tx_bytes = 0;
-
-		/* allow processing more data */
-		set_bit(0, &port->write_urbs_free);
+	/*
+	 * Only continue processing in USB serial core if it knows about the
+	 * data (and it's not a spurious done status on port open).
+	 */
+	if (tx_bytes > CH348_TX_HDRSIZE) {
+		port->icount.tx += tx_bytes - CH348_TX_HDRSIZE;
+		usb_serial_generic_write_bulk_callback(port->write_urb);
 	}
-
-	scoped_guard(mutex, &ch348->open_ports_lock)
-		tx_more = test_bit(port->port_number, ch348->open_ports);
-
-	if (tx_more)
-		usb_serial_generic_write_start(port, GFP_ATOMIC);
-
-	usb_serial_port_softint(port);
 }
 
 static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
@@ -286,7 +279,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
 			status_len += sizeof(status_entry->data.unknown8);
-			ch348_write_done(port, true);
+			ch348_tx_done(port);
 		} else {
 			status_len += sizeof(status_entry->data.unknown8);
 			dev_dbg_ratelimited(&port->dev,
@@ -346,30 +339,9 @@ static void ch348_process_read_urb(struct urb *urb)
 
 static void ch348_write_bulk_callback(struct urb *urb)
 {
-	struct usb_serial_port *port = urb->context;
-
-	switch (urb->status) {
-	case 0:
-		/* Processing will continue once we receive UART_IIR_THRI. */
-		return;
-
-	case -ECONNRESET:
-	case -ENOENT:
-	case -ESHUTDOWN:
-		/* this urb is terminated, clean up */
-		dev_dbg(&urb->dev->dev,
-			"ch348_write_bulk_callback - urb shutting down with status: %d\n",
-			urb->status);
-		break;
-
-	default:
-		dev_err_console(port,
-				"ch348_write_bulk_callback - nonzero write bulk status received: %d\n",
-				urb->status);
-		break;
-	}
-
-	ch348_write_done(port, false);
+	if (urb->status)
+		usb_serial_generic_write_bulk_callback(urb);
+	/* else: processing continues once we receive UART_IIR_THRI */
 }
 
 static int ch348_write_config(struct ch348 *ch348, u8 cmd, u8 reg, void *data,
@@ -660,14 +632,13 @@ err_kill_read_urbs:
 static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(port->write_urbs); ++i)
-		usb_kill_urb(port->write_urbs[i]);
+	usb_kill_urb(port->write_urb);
 
 	scoped_guard(spinlock_irqsave, &port->lock) {
 		kfifo_reset_out(&port->write_fifo);
 		set_bit(0, &port->write_urbs_free);
+		port->tx_bytes = 0;
 	}
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
