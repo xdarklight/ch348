@@ -109,24 +109,20 @@ enum ch348_package {
 	CH348L, /* LQFP100 (large) */
 };
 
-/**
- * struct ch348_port - per-port information
- * @hw_flow_control:	Whether HW flow control is enabled or disabled
- */
-struct ch348_port {
-	bool hw_flow_control;
+enum ch348_port_mode {
+	CH348_PORT_MODE_DEFAULT,
+	CH348_PORT_MODE_HW_FLOW,
 };
 
 /**
  * struct ch348 - main container for all this driver information
- * @ports:		List of per-port information
+ * @port_mode:		per-port mode
  * @open_ports:		bitmap of ports that are currently opened
  * @open_ports_lock:	protect against concurrent modification of open_ports
  * @package_type:	indicates package type
  */
 struct ch348 {
-	struct ch348_port ports[CH348_MAXPORT];
-	struct usb_serial *serial;
+	enum ch348_port_mode port_mode[CH348_MAXPORT];
 
 	DECLARE_BITMAP(open_ports, CH348_MAXPORT);
 	struct mutex open_ports_lock;
@@ -470,14 +466,23 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 				   const struct ktermios *termios_old)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	bool hw_flow_control = !!(termios->c_cflag & CRTSCTS);
+	enum ch348_port_mode port_mode;
+	u8 control;
 	int ret;
 
-	if (ch348->ports[port->port_number].hw_flow_control == hw_flow_control)
+	if (termios->c_cflag & CRTSCTS) {
+		control = R_C4_HW_FLOW;
+		port_mode = CH348_PORT_MODE_HW_FLOW;
+	} else {
+		control = R_C4_NO_RTS;
+		port_mode = CH348_PORT_MODE_DEFAULT;
+	}
+
+	if (ch348->port_mode[port->port_number] == port_mode)
 		return;
 
-	if (hw_flow_control && ch348->package_type == CH348Q &&
-	    port->port_number >= 4) {
+	if (port_mode == CH348_PORT_MODE_HW_FLOW &&
+	    ch348->package_type == CH348Q && port->port_number >= 4) {
 		dev_err(&port->dev,
 			"Flow control is not supported on CH348Q port %u\n",
 			port->port_number);
@@ -485,8 +490,7 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 		return;
 	}
 
-	ret = ch348_port_config(port, CMD_W_BR, R_C4,
-				hw_flow_control ? R_C4_HW_FLOW : R_C4_NO_RTS);
+	ret = ch348_port_config(port, CMD_W_BR, R_C4, control);
 	if (ret) {
 		if (termios_old) {
 			termios->c_cflag &= ~CRTSCTS;
@@ -496,7 +500,7 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 		return;
 	}
 
-	ch348->ports[port->port_number].hw_flow_control = hw_flow_control;
+	ch348->port_mode[port->port_number] = port_mode;
 }
 
 static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *port,
