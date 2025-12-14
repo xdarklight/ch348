@@ -30,14 +30,6 @@
 
 #define CH348_CMD_TIMEOUT		2000
 
-#define CH348_CTO_D			0x01
-#define CH348_CTO_R			0x02
-
-#define CH348_CTI_C			0x10
-#define CH348_CTI_DSR			0x20
-#define CH348_CTI_R			0x40
-#define CH348_CTI_DCD			0x80
-
 #define CMD_W_R				0xc0
 #define CMD_W_BR			0x80
 
@@ -46,15 +38,21 @@
 
 /* R_C1 = 0x01 is UART_IER compatible */
 
+/* no official documentation available for R_C2 */
 #define R_C2				0x02
 #define R_C2_ACTIVATE			0x87
 
 #define R_C3				0x03
 
+/* no official documentation available for R_C4 */
 #define R_C4				0x04
+#define R_C4_DTR_OFF			0x00
+#define R_C4_DTR_ON			0x01
+#define R_C4_RTS_OFF			0x10
+#define R_C4_RTS_ON			0x11
 #define R_C4_ACTIVATE			0x08
 #define R_C4_HW_FLOW			0x50
-#define R_C4_NO_RTS			0x51 /* no official documentation, name is a guess */
+#define R_C4_NO_RTS			0x51
 
 #define R_C5				0x06
 
@@ -600,6 +598,35 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ch348_set_flow_control(port, termios, termios_old);
 }
 
+static void ch348_dtr_rts(struct usb_serial_port *port, int on)
+{
+	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	int ret;
+
+	/*
+	 * Only the first four ports have the modem control pins routed outside
+	 * the CH348Q package.
+	 */
+	if (ch348->package_type == CH348Q && port->port_number >= 4) {
+		dev_dbg(&port->dev,
+			"DTR/RTS is not supported on CH348Q port %u\n",
+			port->port_number);
+		return;
+	}
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4,
+				on ? R_C4_DTR_ON : R_C4_DTR_OFF);
+	if (ret)
+		dev_err(&port->dev, "Failed to turn DTR %s in R_C4: %d\n",
+			str_on_off(on), ret);
+
+	ret = ch348_port_config(port, CMD_W_BR, R_C4,
+				on ? R_C4_RTS_ON : R_C4_RTS_OFF);
+	if (ret)
+		dev_err(&port->dev, "Failed to turn RTS %s in R_C4: %d\n",
+			str_on_off(on), ret);
+}
+
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
@@ -785,6 +812,7 @@ static struct usb_serial_driver ch348_device = {
 	.open =			ch348_open,
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
+	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
