@@ -52,8 +52,8 @@
 #define R_C4_RTS_OFF			0x10
 #define R_C4_RTS_ON			0x11
 #define R_C4_ACTIVATE			0x08
-#define R_C4_HW_FLOW			0x50
-#define R_C4_NO_RTS			0x51
+#define R_C4_HW_FLOW_CONTROL_OFF	0x50
+#define R_C4_HW_FLOW_CONTROL_ON		0x51
 
 #define R_C5				0x06
 
@@ -477,10 +477,10 @@ static void ch348_set_flow_control(struct usb_serial_port *port,
 	int ret;
 
 	if (termios->c_cflag & CRTSCTS) {
-		control = R_C4_HW_FLOW;
+		control = R_C4_HW_FLOW_CONTROL_ON;
 		port_mode = CH348_PORT_MODE_HW_FLOW;
 	} else {
-		control = R_C4_NO_RTS;
+		control = R_C4_HW_FLOW_CONTROL_OFF;
 		port_mode = CH348_PORT_MODE_DEFAULT;
 	}
 
