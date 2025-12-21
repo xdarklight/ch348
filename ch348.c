@@ -114,26 +114,6 @@ enum ch348_package {
 	CH348L, /* LQFP100 (large) */
 };
 
-enum ch348_port_mode {
-	CH348_PORT_MODE_DEFAULT,
-	CH348_PORT_MODE_HW_FLOW,
-};
-
-/**
- * struct ch348_port - per port driver information
- *
- * @lock:		protects against concurrent modification of data below
- * @mode:		the current mode of the port
- * @mcr:		modem configuration register cache
- * @msr:		modem status register (used for delta calculation)
- */
-struct ch348_port {
-	spinlock_t lock;
-	enum ch348_port_mode mode;
-	u8 mcr;
-	u8 msr;
-};
-
 /**
  * struct ch348 - main container for all this driver information
  * @open_ports:		bitmap of ports that are currently opened
@@ -287,37 +267,6 @@ static void ch348_write_done(struct usb_serial_port *port)
 	usb_serial_port_softint(port);
 }
 
-static void ch348_update_msr(struct usb_serial_port *port, u8 msr)
-{
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-	struct tty_struct *tty;
-
-	scoped_guard(spinlock_irqsave, &port_priv->lock)
-		port_priv->msr = msr;
-
-	if (!(msr & UART_MSR_ANY_DELTA))
-		return;
-
-	if (msr & UART_MSR_DCTS)
-		port->icount.cts++;
-	if (msr & UART_MSR_DDSR)
-		port->icount.dsr++;
-	if (msr & UART_MSR_TERI)
-		port->icount.rng++;
-
-	if (msr & UART_MSR_DDCD) {
-		port->icount.dcd++;
-		tty = tty_port_tty_get(&port->port);
-		if (tty) {
-			usb_serial_handle_dcd_change(port, tty,
-						     msr & UART_MSR_DDCD);
-			tty_kref_put(tty);
-		}
-	}
-
-	wake_up_interruptible(&port->port.delta_msr_wait);
-}
-
 static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 {
 	struct ch348_status_entry *status_entry;
@@ -350,7 +299,6 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			status_len += sizeof(status_entry->data.init_data);
 		} else if (status_entry->reg_iir == VEN_R) {
 			status_len += sizeof(status_entry->data.ven_r_msr);
-			ch348_update_msr(port, status_entry->data.ven_r_msr.msr);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			status_len += sizeof(status_entry->data.lsr);
 
@@ -367,7 +315,6 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			ch348_write_done(port);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
 			status_len += sizeof(status_entry->data.msr);
-			ch348_update_msr(port, status_entry->data.msr);
 		} else {
 			status_len += sizeof(status_entry->data.unknown);
 			dev_dbg_ratelimited(&port->dev,
@@ -518,24 +465,8 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static int ch348_update_modem_status(struct usb_serial_port *port)
-{
-	u8 control = VEN_R_UPDATE_MODEM_STATUS;
-	int ret;
-
-	ret = ch348_write_config(port->serial, CMD_WB_E, VEN_R, &control,
-				 sizeof(control));
-	if (ret < 0)
-		dev_err(&port->dev,
-			"Failed to trigger VEN_R_UPDATE_MODEM_STATUS: %d\n",
-			ret);
-
-	return ret;
-}
-
 static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 {
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	bool dtr, rts;
 	int ret;
@@ -570,72 +501,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 		return ret;
 	}
 
-	scoped_guard(spinlock_irqsave, &port_priv->lock)
-		port_priv->mcr = mcr;
-
 	return 0;
-}
-
-static int ch348_update_modem_control(struct usb_serial_port *port, u8 set,
-				      u8 clear)
-{
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-	u8 new_mcr;
-
-	scoped_guard(spinlock_irqsave, &port_priv->lock) {
-		new_mcr = port_priv->mcr;
-
-		new_mcr |= set;
-		new_mcr &= ~clear;
-
-		if (new_mcr == port_priv->mcr)
-			return 0;
-	}
-
-	return ch348_set_modem_control(port, new_mcr);
-}
-
-static void ch348_set_flow_control(struct usb_serial_port *port,
-				   struct ktermios *termios,
-				   const struct ktermios *termios_old)
-{
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	enum ch348_port_mode port_mode;
-	u8 control;
-	int ret;
-
-	if (termios->c_cflag & CRTSCTS) {
-		control = R_C4_HW_FLOW_CONTROL_ON;
-		port_mode = CH348_PORT_MODE_HW_FLOW;
-	} else {
-		control = R_C4_HW_FLOW_CONTROL_OFF;
-		port_mode = CH348_PORT_MODE_DEFAULT;
-	}
-
-	if (port_priv->mode == port_mode)
-		return;
-
-	if (port_mode == CH348_PORT_MODE_HW_FLOW &&
-	    ch348->package_type == CH348Q && port->port_number >= 4) {
-		dev_err(&port->dev,
-			"Flow control is not supported on CH348Q port %u\n",
-			port->port_number);
-		termios->c_cflag &= ~CRTSCTS;
-		return;
-	}
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4, control);
-	if (ret) {
-		if (termios_old) {
-			termios->c_cflag &= ~CRTSCTS;
-			termios->c_cflag |= (termios_old->c_cflag & CRTSCTS);
-		}
-
-		return;
-	}
-
-	port_priv->mode = port_mode;
 }
 
 static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *port,
@@ -715,17 +581,6 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 			  UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
-
-	if (!baudrate)
-		ch348_update_modem_control(port, 0,
-					   UART_MCR_DTR | UART_MCR_RTS);
-	else if (termios_old && !tty_termios_baud_rate(termios_old))
-		ch348_update_modem_control(port, UART_MCR_DTR | UART_MCR_RTS,
-					   0);
-
-	ch348_set_flow_control(port, termios, termios_old);
-
-	ch348_update_modem_status(port);
 }
 
 static int ch348_break_ctl(struct tty_struct *tty, int on)
@@ -736,55 +591,9 @@ static int ch348_break_ctl(struct tty_struct *tty, int on)
 				 on ? R_C3_BREAK_ON : R_C3_BREAK_OFF);
 }
 
-static int ch348_tiocmget(struct tty_struct *tty)
-{
-	struct usb_serial_port *port = tty->driver_data;
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-	unsigned int result = 0;
-
-	scoped_guard(spinlock_irqsave, &port_priv->lock) {
-		result |= port_priv->mcr & UART_MCR_DTR ? TIOCM_DTR : 0;
-		result |= port_priv->mcr & UART_MCR_RTS ? TIOCM_RTS : 0;
-		result |= port_priv->msr & UART_MSR_CTS ? TIOCM_CTS : 0;
-		result |= port_priv->msr & UART_MSR_DCD ? TIOCM_CAR : 0;
-		result |= port_priv->msr & UART_MSR_RI ? TIOCM_RI : 0;
-		result |= port_priv->msr & UART_MSR_DSR ? TIOCM_DSR : 0;
-	}
-
-	return result;
-}
-
-static int ch348_tiocmset(struct tty_struct *tty, unsigned int set,
-			  unsigned int clear)
-{
-	struct usb_serial_port *port = tty->driver_data;
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-	u8 mcr_set = 0, mcr_clear = 0;
-
-	scoped_guard(spinlock_irqsave, &port_priv->lock) {
-		if (set & TIOCM_RTS)
-			mcr_set |= UART_MCR_RTS;
-		if (set & TIOCM_DTR)
-			mcr_set |= UART_MCR_DTR;
-		if (clear & TIOCM_RTS)
-			mcr_clear |= UART_MCR_RTS;
-		if (clear & TIOCM_DTR)
-			mcr_clear |= UART_MCR_DTR;
-	}
-
-	return ch348_update_modem_control(port, mcr_set, mcr_clear);
-}
-
 static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 {
 	ch348_set_modem_control(port, on ? UART_MCR_DTR | UART_MCR_RTS : 0);
-}
-
-static int ch348_carrier_raised(struct usb_serial_port *port)
-{
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-
-	return port_priv->msr & UART_MSR_DCD ? 1 : 0;
 }
 
 static bool ch348_tx_empty(struct usb_serial_port *port)
@@ -876,28 +685,6 @@ static int ch348_detect_version(struct usb_serial *serial)
 		 ch348->package_type == CH348Q ? 'Q' : 'L', version_buf[0]);
 
 	return 0;
-}
-
-static int ch348_port_probe(struct usb_serial_port *port)
-{
-	struct ch348_port *port_priv;
-
-	port_priv = kzalloc(sizeof(*port_priv), GFP_KERNEL);
-	if (!port_priv)
-		return -ENOMEM;
-
-	spin_lock_init(&port_priv->lock);
-
-	usb_set_serial_port_data(port, port_priv);
-
-	return 0;
-}
-
-static void ch348_port_remove(struct usb_serial_port *port)
-{
-	struct ch348_port *port_priv = usb_get_serial_port_data(port);
-
-	kfree(port_priv);
 }
 
 static int ch348_attach(struct usb_serial *serial)
@@ -997,19 +784,13 @@ static struct usb_serial_driver ch348_device = {
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
 	.break_ctl =		ch348_break_ctl,
-	.tiocmget =		ch348_tiocmget,
-	.tiocmset =		ch348_tiocmset,
-	.tiocmiwait =		usb_serial_generic_tiocmiwait,
 	.get_icount =		usb_serial_generic_get_icount,
 	.dtr_rts =		ch348_dtr_rts,
-	.carrier_raised =	ch348_carrier_raised,
 	.tx_empty =		ch348_tx_empty,
 	.process_read_urb =	ch348_process_read_urb,
 	.write_bulk_callback =	ch348_write_bulk_callback,
 	.write =		ch348_write,
 	.calc_num_ports =	ch348_calc_num_ports,
-	.port_probe =		ch348_port_probe,
-	.port_remove =		ch348_port_remove,
 	.attach =		ch348_attach,
 	.release =		ch348_release,
 	.resume =		ch348_resume,
