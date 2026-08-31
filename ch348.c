@@ -187,7 +187,7 @@ static int ch348_submit_read_urbs(struct usb_serial *serial, gfp_t mem_flags)
 	ret = usb_serial_generic_submit_read_urbs(rx_port, mem_flags);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit read URBs of RX port: %d\n", ret);
+			"failed to submit read URBs of RX port: %d\n", ret);
 		return ret;
 	}
 
@@ -195,7 +195,7 @@ static int ch348_submit_read_urbs(struct usb_serial *serial, gfp_t mem_flags)
 	ret = usb_serial_generic_submit_read_urbs(status_int_port, mem_flags);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit read URBs of STATUS/INT port: %d\n",
+			"failed to submit read URBs of STATUS/INT port: %d\n",
 			ret);
 		ch348_kill_port_read_urbs(rx_port);
 		return ret;
@@ -248,7 +248,7 @@ static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
 
 	ret = usb_submit_urb(port->write_urb, mem_flags);
 	if (ret) {
-		dev_err_console(port, "Failed to submit TX urb: %d\n", ret);
+		dev_err_console(port, "failed to submit TX URB: %d\n", ret);
 
 		scoped_guard(spinlock_irqsave, &port->lock)
 			port->tx_bytes -= tx_bytes;
@@ -463,7 +463,7 @@ static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
 				 sizeof(control));
 	if (ret < 0)
 		dev_err(&port->dev,
-			"Failed to write port config: %d\n", ret);
+			"failed to write port config: %d\n", ret);
 
 	return ret;
 }
@@ -508,7 +508,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				dtr ? R_C4_DTR_ON : R_C4_DTR_OFF);
 	if (ret) {
-		dev_err(&port->dev, "Failed set DTR = %s in R_C4: %d\n",
+		dev_err(&port->dev, "failed to set DTR = %s in R_C4: %d\n",
 			str_on_off(dtr), ret);
 		return ret;
 	}
@@ -516,7 +516,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				rts ? R_C4_RTS_ON : R_C4_RTS_OFF);
 	if (ret) {
-		dev_err(&port->dev, "Failed to set RTS = %s in R_C4: %d\n",
+		dev_err(&port->dev, "failed to set RTS = %s in R_C4: %d\n",
 			str_on_off(rts), ret);
 		return ret;
 	}
@@ -594,7 +594,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	ret = ch348_write_config(port->serial, CMD_WB_E | portnum, R_INIT,
 				 &config, sizeof(config));
 	if (ret < 0) {
-		dev_err(&port->dev, "Failed to change line settings: %d\n",
+		dev_err(&port->dev, "failed to change line settings: %d\n",
 			ret);
 		if (termios_old)
 			tty->termios = *termios_old;
@@ -642,14 +642,14 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C2_ACTIVATE: %d\n",
+		dev_err(&port->dev, "failed to configure R_C2_ACTIVATE: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C4_ACTIVATE: %d\n",
+		dev_err(&port->dev, "failed to configure R_C4_ACTIVATE: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
@@ -698,7 +698,7 @@ static int ch348_detect_version(struct usb_serial *serial)
 				   0, 0, version_buf, sizeof(version_buf),
 				   CH348_CMD_TIMEOUT, GFP_KERNEL);
 	if (ret) {
-		dev_err(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
+		dev_err(&serial->dev->dev, "failed to read CMD_VER: %d\n", ret);
 		return ret;
 	}
 
