@@ -534,18 +534,20 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	if (termios_old && !tty_termios_hw_change(termios, termios_old))
 		return;
 
-	/* Don't rewrite B0 */
 	baudrate = tty_termios_baud_rate(termios);
-	if (baudrate) {
-		/*
-		 * The datasheet states that only baud rates in range of
-		 * 1200..6000000 are supported. Tests with an oscilloscope
-		 * confirm that even when configuring a baud rate slower than
-		 * 1200 the output stays at around 1200 baud.
-		 */
-		baudrate = clamp(baudrate, 1200, 6000000);
-		tty_termios_encode_baud_rate(termios, baudrate, baudrate);
+	if (!baudrate) {
+		ch348_set_modem_control(port, 0);
+		return;
 	}
+
+	/*
+	 * The datasheet states that only baud rates in range of
+	 * 1200..6000000 are supported. Tests with an oscilloscope
+	 * confirm that even when configuring a baud rate slower than
+	 * 1200 the output stays at around 1200 baud.
+	 */
+	baudrate = clamp(baudrate, 1200, 6000000);
+	tty_termios_encode_baud_rate(termios, baudrate, baudrate);
 
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
@@ -596,6 +598,8 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 			ret);
 		if (termios_old)
 			tty->termios = *termios_old;
+	} else if (termios_old && (termios_old->c_cflag & CBAUD) == B0) {
+		ch348_set_modem_control(port, UART_MCR_DTR | UART_MCR_RTS);
 	}
 
 	ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
