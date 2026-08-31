@@ -668,10 +668,12 @@ static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 
-	scoped_guard(spinlock_irqsave, &port->lock)
-		kfifo_reset_out(&port->write_fifo);
-
 	usb_kill_urb(port->write_urb);
+
+	scoped_guard(spinlock_irqsave, &port->lock) {
+		kfifo_reset_out(&port->write_fifo);
+		port->tx_bytes = 0;
+	}
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
 		clear_bit(port->port_number, ch348->open_ports);
