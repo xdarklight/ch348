@@ -135,6 +135,8 @@ struct ch348_config_buf {
 	u8 data[];
 } __packed;
 
+#define CH348_CONFIG_HDRSIZE	offsetof(struct ch348_config_buf, data)
+
 struct ch348_config_data_init {
 	u8 port;
 	__be32 baudrate;
@@ -745,6 +747,13 @@ static int ch348_calc_num_ports(struct usb_serial *serial,
 				struct usb_serial_endpoints *epds)
 {
 	int i;
+
+	if (!epds->bulk_out[0] || !epds->bulk_out[1] ||
+	    usb_endpoint_maxp(epds->bulk_out[0]) <= CH348_TX_HDRSIZE ||
+	    usb_endpoint_maxp(epds->bulk_out[1]) < CH348_CONFIG_HDRSIZE) {
+		dev_err(&serial->dev->dev, "bulk-out endpoint is too small\n");
+		return -ENODEV;
+	}
 
 	/*
 	 * Reserve a bulk out for each serial port plus an additional one
