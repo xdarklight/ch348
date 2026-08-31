@@ -101,6 +101,8 @@ struct ch348_rxbuf {
 	u8 data[CH348_RX_PORT_MAX_LENGTH];
 } __packed;
 
+#define CH348_RX_HDRSIZE	offsetof(struct ch348_rxbuf, data)
+
 struct ch348_txbuf {
 	u8 port;
 	__le16 length;
@@ -163,6 +165,7 @@ struct ch348_status_entry {
 	} data;
 } __packed;
 
+#define CH348_STATUS_HDRSIZE	offsetof(struct ch348_status_entry, data)
 #define CH348_STATUS_ENTRY_PORTNUM_MASK			0xf
 
 static void ch348_kill_port_read_urbs(struct usb_serial_port *port)
@@ -281,7 +284,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length;) {
+	for (i = 0; i + CH348_STATUS_HDRSIZE <= urb->actual_length;) {
 		status_entry = urb->transfer_buffer + i;
 		portnum = status_entry->portnum & CH348_STATUS_ENTRY_PORTNUM_MASK;
 
@@ -293,7 +296,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		}
 
 		port = serial->port[portnum];
-		status_len = sizeof(*status_entry) - sizeof(status_entry->data);
+		status_len = CH348_STATUS_HDRSIZE;
 
 		if (status_entry->reg_iir == R_INIT) {
 			status_len += sizeof(status_entry->data.init_data);
@@ -301,7 +304,22 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			status_len += sizeof(status_entry->data.ven_r_msr);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			status_len += sizeof(status_entry->data.lsr);
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
+			status_len += sizeof(status_entry->data.unknown);
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
+			status_len += sizeof(status_entry->data.msr);
+		} else {
+			status_len += sizeof(status_entry->data.unknown);
+		}
 
+		if (status_len > urb->actual_length - i) {
+			dev_dbg_ratelimited(&port->dev,
+					    "Truncated status with reg_iir 0x%02x\n",
+					    status_entry->reg_iir);
+			break;
+		}
+
+		if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			if (status_entry->data.lsr & UART_LSR_OE)
 				port->icount.overrun++;
 			if (status_entry->data.lsr & UART_LSR_PE)
@@ -311,12 +329,10 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			if (status_entry->data.lsr & UART_LSR_BI)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
-			status_len += sizeof(status_entry->data.unknown);
 			ch348_write_done(port);
-		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
-			status_len += sizeof(status_entry->data.msr);
-		} else {
-			status_len += sizeof(status_entry->data.unknown);
+		} else if (status_entry->reg_iir != R_INIT &&
+			   status_entry->reg_iir != VEN_R &&
+			   (status_entry->reg_iir & UART_IIR_ID) != UART_IIR_MSI) {
 			dev_dbg_ratelimited(&port->dev,
 					    "Unsupported status with reg_iir 0x%02x\n",
 					    status_entry->reg_iir);
@@ -338,7 +354,8 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length; i += sizeof(*rxb)) {
+	for (i = 0; i + CH348_RX_HDRSIZE <= urb->actual_length;
+	     i += sizeof(*rxb)) {
 		rxb = urb->transfer_buffer + i;
 		portnum = rxb->port;
 		if (portnum >= CH348_MAXPORT) {
@@ -349,7 +366,8 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 		port = serial->port[portnum];
 
 		serial_rx_len = rxb->length;
-		if (serial_rx_len > CH348_RX_PORT_MAX_LENGTH) {
+		if (serial_rx_len > CH348_RX_PORT_MAX_LENGTH ||
+		    serial_rx_len > urb->actual_length - i - CH348_RX_HDRSIZE) {
 			dev_dbg(&port->dev, "Invalid length %d for port %d\n",
 				serial_rx_len, portnum);
 			break;
