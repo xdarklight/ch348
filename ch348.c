@@ -145,8 +145,8 @@ struct ch348_config_data_init {
 	u8 unknown;
 } __packed;
 
-#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x2
-#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x0
+#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x0
+#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x2
 
 struct ch348_ven_r_msr {
 	u8 control;
@@ -535,16 +535,17 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	/* Don't rewrite B0 */
 	baudrate = tty_termios_baud_rate(termios);
-	if (baudrate) {
-		/*
-		 * The datasheet states that only baud rates in range of
-		 * 1200..6000000 are supported. Tests with an oscilloscope
-		 * confirm that even when configuring a baud rate slower than
-		 * 1200 the output stays at around 1200 baud.
-		 */
-		baudrate = clamp(baudrate, 1200, 6000000);
-		tty_termios_encode_baud_rate(termios, baudrate, baudrate);
-	}
+	if (!baudrate)
+		return;
+
+	/*
+	 * The datasheet states that only baud rates in range of
+	 * 1200..6000000 are supported. Tests with an oscilloscope
+	 * confirm that even when configuring a baud rate slower than
+	 * 1200 the output stays at around 1200 baud.
+	 */
+	baudrate = clamp(baudrate, 1200, 6000000);
+	tty_termios_encode_baud_rate(termios, baudrate, baudrate);
 
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
@@ -582,9 +583,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	config.baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
-	else
 		config.format = CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS;
+	else
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
 
 	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
