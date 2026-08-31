@@ -101,6 +101,8 @@ struct ch348_rxbuf {
 	u8 data[CH348_RX_PORT_MAX_LENGTH];
 } __packed;
 
+#define CH348_RX_HDRSIZE	offsetof(struct ch348_rxbuf, data)
+
 struct ch348_txbuf {
 	u8 port;
 	__le16 length;
@@ -133,6 +135,8 @@ struct ch348_config_buf {
 	u8 data[];
 } __packed;
 
+#define CH348_CONFIG_HDRSIZE	offsetof(struct ch348_config_buf, data)
+
 struct ch348_config_data_init {
 	u8 port;
 	__be32 baudrate;
@@ -143,8 +147,8 @@ struct ch348_config_data_init {
 	u8 unknown;
 } __packed;
 
-#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x2
-#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x0
+#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x0
+#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x2
 
 struct ch348_ven_r_msr {
 	u8 control;
@@ -163,6 +167,7 @@ struct ch348_status_entry {
 	} data;
 } __packed;
 
+#define CH348_STATUS_HDRSIZE	offsetof(struct ch348_status_entry, data)
 #define CH348_STATUS_ENTRY_PORTNUM_MASK			0xf
 
 static void ch348_kill_port_read_urbs(struct usb_serial_port *port)
@@ -182,7 +187,7 @@ static int ch348_submit_read_urbs(struct usb_serial *serial, gfp_t mem_flags)
 	ret = usb_serial_generic_submit_read_urbs(rx_port, mem_flags);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit read URBs of RX port: %d\n", ret);
+			"failed to submit read URBs of RX port: %d\n", ret);
 		return ret;
 	}
 
@@ -190,7 +195,7 @@ static int ch348_submit_read_urbs(struct usb_serial *serial, gfp_t mem_flags)
 	ret = usb_serial_generic_submit_read_urbs(status_int_port, mem_flags);
 	if (ret) {
 		dev_err(&serial->dev->dev,
-			"Failed to submit read URBs of STATUS/INT port: %d\n",
+			"failed to submit read URBs of STATUS/INT port: %d\n",
 			ret);
 		ch348_kill_port_read_urbs(rx_port);
 		return ret;
@@ -243,7 +248,7 @@ static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
 
 	ret = usb_submit_urb(port->write_urb, mem_flags);
 	if (ret) {
-		dev_err_console(port, "Failed to submit TX urb: %d\n", ret);
+		dev_err_console(port, "failed to submit TX URB: %d\n", ret);
 
 		scoped_guard(spinlock_irqsave, &port->lock)
 			port->tx_bytes -= tx_bytes;
@@ -281,7 +286,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length;) {
+	for (i = 0; i + CH348_STATUS_HDRSIZE <= urb->actual_length;) {
 		status_entry = urb->transfer_buffer + i;
 		portnum = status_entry->portnum & CH348_STATUS_ENTRY_PORTNUM_MASK;
 
@@ -293,7 +298,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		}
 
 		port = serial->port[portnum];
-		status_len = sizeof(*status_entry) - sizeof(status_entry->data);
+		status_len = CH348_STATUS_HDRSIZE;
 
 		if (status_entry->reg_iir == R_INIT) {
 			status_len += sizeof(status_entry->data.init_data);
@@ -301,7 +306,22 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			status_len += sizeof(status_entry->data.ven_r_msr);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			status_len += sizeof(status_entry->data.lsr);
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
+			status_len += sizeof(status_entry->data.unknown);
+		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
+			status_len += sizeof(status_entry->data.msr);
+		} else {
+			status_len += sizeof(status_entry->data.unknown);
+		}
 
+		if (status_len > urb->actual_length - i) {
+			dev_dbg_ratelimited(&port->dev,
+					    "Truncated status with reg_iir 0x%02x\n",
+					    status_entry->reg_iir);
+			break;
+		}
+
+		if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
 			if (status_entry->data.lsr & UART_LSR_OE)
 				port->icount.overrun++;
 			if (status_entry->data.lsr & UART_LSR_PE)
@@ -311,12 +331,10 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			if (status_entry->data.lsr & UART_LSR_BI)
 				port->icount.brk++;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
-			status_len += sizeof(status_entry->data.unknown);
 			ch348_write_done(port);
-		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
-			status_len += sizeof(status_entry->data.msr);
-		} else {
-			status_len += sizeof(status_entry->data.unknown);
+		} else if (status_entry->reg_iir != R_INIT &&
+			   status_entry->reg_iir != VEN_R &&
+			   (status_entry->reg_iir & UART_IIR_ID) != UART_IIR_MSI) {
 			dev_dbg_ratelimited(&port->dev,
 					    "Unsupported status with reg_iir 0x%02x\n",
 					    status_entry->reg_iir);
@@ -338,7 +356,8 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length; i += sizeof(*rxb)) {
+	for (i = 0; i + CH348_RX_HDRSIZE <= urb->actual_length;
+	     i += sizeof(*rxb)) {
 		rxb = urb->transfer_buffer + i;
 		portnum = rxb->port;
 		if (portnum >= CH348_MAXPORT) {
@@ -349,7 +368,8 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 		port = serial->port[portnum];
 
 		serial_rx_len = rxb->length;
-		if (serial_rx_len > CH348_RX_PORT_MAX_LENGTH) {
+		if (serial_rx_len > CH348_RX_PORT_MAX_LENGTH ||
+		    serial_rx_len > urb->actual_length - i - CH348_RX_HDRSIZE) {
 			dev_dbg(&port->dev, "Invalid length %d for port %d\n",
 				serial_rx_len, portnum);
 			break;
@@ -443,7 +463,7 @@ static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
 				 sizeof(control));
 	if (ret < 0)
 		dev_err(&port->dev,
-			"Failed to write port config: %d\n", ret);
+			"failed to write port config: %d\n", ret);
 
 	return ret;
 }
@@ -488,7 +508,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				dtr ? R_C4_DTR_ON : R_C4_DTR_OFF);
 	if (ret) {
-		dev_err(&port->dev, "Failed set DTR = %s in R_C4: %d\n",
+		dev_err(&port->dev, "failed to set DTR = %s in R_C4: %d\n",
 			str_on_off(dtr), ret);
 		return ret;
 	}
@@ -496,7 +516,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				rts ? R_C4_RTS_ON : R_C4_RTS_OFF);
 	if (ret) {
-		dev_err(&port->dev, "Failed to set RTS = %s in R_C4: %d\n",
+		dev_err(&port->dev, "failed to set RTS = %s in R_C4: %d\n",
 			str_on_off(rts), ret);
 		return ret;
 	}
@@ -517,16 +537,17 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 
 	/* Don't rewrite B0 */
 	baudrate = tty_termios_baud_rate(termios);
-	if (baudrate) {
-		/*
-		 * The datasheet states that only baud rates in range of
-		 * 1200..6000000 are supported. Tests with an oscilloscope
-		 * confirm that even when configuring a baud rate slower than
-		 * 1200 the output stays at around 1200 baud.
-		 */
-		baudrate = clamp(baudrate, 1200, 6000000);
-		tty_termios_encode_baud_rate(termios, baudrate, baudrate);
-	}
+	if (!baudrate)
+		return;
+
+	/*
+	 * The datasheet states that only baud rates in range of
+	 * 1200..6000000 are supported. Tests with an oscilloscope
+	 * confirm that even when configuring a baud rate slower than
+	 * 1200 the output stays at around 1200 baud.
+	 */
+	baudrate = clamp(baudrate, 1200, 6000000);
+	tty_termios_encode_baud_rate(termios, baudrate, baudrate);
 
 	if (termios->c_cflag & PARENB) {
 		if  (termios->c_cflag & CMSPAR) {
@@ -564,16 +585,16 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	config.baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
-	else
 		config.format = CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS;
+	else
+		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
 
 	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
 	ret = ch348_write_config(port->serial, CMD_WB_E | portnum, R_INIT,
 				 &config, sizeof(config));
 	if (ret < 0) {
-		dev_err(&port->dev, "Failed to change line settings: %d\n",
+		dev_err(&port->dev, "failed to change line settings: %d\n",
 			ret);
 		if (termios_old)
 			tty->termios = *termios_old;
@@ -621,14 +642,14 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C2_ACTIVATE: %d\n",
+		dev_err(&port->dev, "failed to configure R_C2_ACTIVATE: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C4_ACTIVATE: %d\n",
+		dev_err(&port->dev, "failed to configure R_C4_ACTIVATE: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
@@ -649,10 +670,12 @@ static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 
-	scoped_guard(spinlock_irqsave, &port->lock)
-		kfifo_reset_out(&port->write_fifo);
-
 	usb_kill_urb(port->write_urb);
+
+	scoped_guard(spinlock_irqsave, &port->lock) {
+		kfifo_reset_out(&port->write_fifo);
+		port->tx_bytes = 0;
+	}
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
 		clear_bit(port->port_number, ch348->open_ports);
@@ -675,7 +698,7 @@ static int ch348_detect_version(struct usb_serial *serial)
 				   0, 0, version_buf, sizeof(version_buf),
 				   CH348_CMD_TIMEOUT, GFP_KERNEL);
 	if (ret) {
-		dev_err(&serial->dev->dev, "Failed to read CMD_VER: %d\n", ret);
+		dev_err(&serial->dev->dev, "failed to read CMD_VER: %d\n", ret);
 		return ret;
 	}
 
@@ -724,6 +747,13 @@ static int ch348_calc_num_ports(struct usb_serial *serial,
 				struct usb_serial_endpoints *epds)
 {
 	int i;
+
+	if (!epds->bulk_out[0] || !epds->bulk_out[1] ||
+	    usb_endpoint_maxp(epds->bulk_out[0]) <= CH348_TX_HDRSIZE ||
+	    usb_endpoint_maxp(epds->bulk_out[1]) < CH348_CONFIG_HDRSIZE) {
+		dev_err(&serial->dev->dev, "bulk-out endpoint is too small\n");
+		return -ENODEV;
+	}
 
 	/*
 	 * Reserve a bulk out for each serial port plus an additional one
