@@ -136,15 +136,12 @@ struct ch348_config_buf {
 struct ch348_config_data_init {
 	u8 port;
 	__be32 baudrate;
-	u8 format;
+	u8 stopbits;
 	u8 paritytype;
 	u8 databits;
 	u8 rate;
 	u8 unknown;
 } __packed;
-
-#define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x2
-#define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x0
 
 struct ch348_ven_r_msr {
 	u8 control;
@@ -584,9 +581,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	config.baudrate = cpu_to_be32(baudrate);
 
 	if (termios->c_cflag & CSTOPB)
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
+		config.stopbits = 2;
 	else
-		config.format = CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS;
+		config.stopbits = 1;
 
 	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
 
