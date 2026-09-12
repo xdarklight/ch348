@@ -333,12 +333,12 @@ static void ch348_process_serial_rx_urb(struct usb_serial *serial,
 	struct usb_serial_port *port;
 	struct ch348_rxbuf *rxb;
 
-	if (urb->actual_length < 2) {
+	if (urb->actual_length < sizeof(*rxb)) {
 		dev_dbg(&serial->dev->dev, "Empty rx buffer\n");
 		return;
 	}
 
-	for (i = 0; i < urb->actual_length; i += sizeof(*rxb)) {
+	for (i = 0; (i + sizeof(*rxb)) <= urb->actual_length; i += sizeof(*rxb)) {
 		rxb = urb->transfer_buffer + i;
 		portnum = rxb->port;
 		if (portnum >= CH348_MAXPORT) {
