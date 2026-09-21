@@ -251,7 +251,7 @@ static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
 
 	ret = usb_submit_urb(port->write_urb, mem_flags);
 	if (ret) {
-		dev_err_console(port, "Failed to submit TX urb: %d\n", ret);
+		dev_err_console(port, "Failed to submit write URB: %d\n", ret);
 
 		scoped_guard(spinlock_irqsave, &port->lock)
 			port->tx_bytes -= tx_bytes;
