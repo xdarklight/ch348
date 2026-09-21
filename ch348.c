@@ -468,7 +468,7 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 
 	count = kfifo_in_locked(&port->write_fifo, buf, count, &port->lock);
 
-	ret = ch348_write_start(port, GFP_KERNEL);
+	ret = ch348_write_start(port, GFP_ATOMIC);
 	if (ret)
 		return ret;
 
