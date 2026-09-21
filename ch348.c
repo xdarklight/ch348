@@ -601,9 +601,6 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	} else if (termios_old && (termios_old->c_cflag & CBAUD) == B0) {
 		ch348_set_modem_control(port, UART_MCR_DTR | UART_MCR_RTS);
 	}
-
-	ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
-			  UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 }
 
 static int ch348_break_ctl(struct tty_struct *tty, int on)
@@ -651,6 +648,11 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 		goto err_kill_read_urbs;
 	}
 
+	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
+				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
+	if (ret)
+		goto err_kill_read_urbs;
+
 	return 0;
 
 err_kill_read_urbs:
@@ -666,6 +668,8 @@ err_kill_read_urbs:
 static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+
+	ch348_port_config(port, CMD_W_R, UART_IER, 0);
 
 	usb_kill_urb(port->write_urb);
 
