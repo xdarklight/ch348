@@ -529,6 +529,9 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	int ret, portnum = port->port_number;
 	speed_t	baudrate;
 
+	/* Hardware flow control is supported by HW but not implemented yet */
+	termios->c_cflag &= ~CRTSCTS;
+
 	if (termios_old && !tty_termios_hw_change(termios, termios_old))
 		return;
 
