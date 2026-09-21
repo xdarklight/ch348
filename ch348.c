@@ -403,14 +403,14 @@ static void ch348_write_bulk_callback(struct urb *urb)
 	case -ENOENT:
 	case -ESHUTDOWN:
 		/* this urb is terminated, clean up */
-		dev_dbg(&urb->dev->dev,
-			"ch348_write_bulk_callback - urb shutting down with status: %d\n",
-			urb->status);
+		dev_dbg(&port->dev,
+			"%s - urb shutting down with status: %d\n",
+			__func__, urb->status);
 		break;
 	default:
 		dev_err_console(port,
-				"ch348_write_bulk_callback - nonzero write bulk status received: %d\n",
-				urb->status);
+				"%s - nonzero write bulk status received: %d\n",
+				__func__, urb->status);
 		break;
 	}
 
