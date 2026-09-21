@@ -636,14 +636,14 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C2_ACTIVATE: %d\n",
+		dev_err(&port->dev, "Failed to set ACTIVATE in R_C2: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
-		dev_err(&port->dev, "Failed to configure R_C4_ACTIVATE: %d\n",
+		dev_err(&port->dev, "Failed to set ACTIVATE in R_C4: %d\n",
 			ret);
 		goto err_kill_read_urbs;
 	}
@@ -651,7 +651,7 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 	if (ret) {
-		dev_err(&port->dev, "Failed to enable UART_IER: %d\n", ret);
+		dev_err(&port->dev, "Failed to enable interrupts: %d\n", ret);
 		goto err_kill_read_urbs;
 	}
 
@@ -674,7 +674,7 @@ static void ch348_close(struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, 0);
 	if (ret)
-		dev_dbg(&port->dev, "Failed to disable UART_IER: %d\n", ret);
+		dev_dbg(&port->dev, "Failed to disable interrupts: %d\n", ret);
 
 	usb_kill_urb(port->write_urb);
 
