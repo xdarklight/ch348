@@ -595,7 +595,7 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 		dev_err(&port->dev, "Failed to change line settings: %d\n",
 			ret);
 		if (termios_old)
-			tty->termios = *termios_old;
+			tty_termios_copy_hw(termios, termios_old);
 	} else if (termios_old && (termios_old->c_cflag & CBAUD) == B0) {
 		ch348_set_modem_control(port, UART_MCR_DTR | UART_MCR_RTS);
 	}
