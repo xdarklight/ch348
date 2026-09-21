@@ -452,20 +452,13 @@ static int ch348_write_config(struct usb_serial *serial, u8 cmd, u8 reg,
 static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
 			     u8 control)
 {
-	int ret;
-
 	if (port->port_number < 4)
 		reg += 0x10 * port->port_number;
 	else
 		reg += 0x10 * (port->port_number - 4) + 0x08;
 
-	ret = ch348_write_config(port->serial, cmd, reg, &control,
-				 sizeof(control));
-	if (ret < 0)
-		dev_err(&port->dev,
-			"Failed to write port config: %d\n", ret);
-
-	return ret;
+	return ch348_write_config(port->serial, cmd, reg, &control,
+				  sizeof(control));
 }
 
 static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
@@ -607,9 +600,15 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 static int ch348_break_ctl(struct tty_struct *tty, int on)
 {
 	struct usb_serial_port *port = tty->driver_data;
+	int ret;
 
-	return ch348_port_config(port, CMD_W_BR, R_C3,
-				 on ? R_C3_BREAK_ON : R_C3_BREAK_OFF);
+	ret = ch348_port_config(port, CMD_W_BR, R_C3,
+				on ? R_C3_BREAK_ON : R_C3_BREAK_OFF);
+	if (ret)
+		dev_err(&port->dev, "Failed to set BREAK = %s in R_C3: %d\n",
+			str_on_off(on), ret);
+
+	return ret;
 }
 
 static void ch348_dtr_rts(struct usb_serial_port *port, int on)
@@ -651,8 +650,10 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
-	if (ret)
+	if (ret) {
+		dev_err(&port->dev, "Failed to enable UART_IER: %d\n", ret);
 		goto err_kill_read_urbs;
+	}
 
 	return 0;
 
@@ -669,8 +670,11 @@ err_kill_read_urbs:
 static void ch348_close(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
+	int ret;
 
-	ch348_port_config(port, CMD_W_R, UART_IER, 0);
+	ret = ch348_port_config(port, CMD_W_R, UART_IER, 0);
+	if (ret)
+		dev_dbg(&port->dev, "Failed to disable UART_IER: %d\n", ret);
 
 	usb_kill_urb(port->write_urb);
 
