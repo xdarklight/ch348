@@ -726,7 +726,7 @@ static int ch348_attach(struct usb_serial *serial)
 	struct ch348 *ch348;
 	int ret;
 
-	ch348 = kzalloc(sizeof(*ch348), GFP_KERNEL);
+	ch348 = kzalloc_obj(*ch348, GFP_KERNEL);
 	if (!ch348)
 		return -ENOMEM;
 
