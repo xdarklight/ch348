@@ -501,7 +501,7 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 	ret = ch348_port_config(port, CMD_W_BR, R_C4,
 				dtr ? R_C4_DTR_ON : R_C4_DTR_OFF);
 	if (ret) {
-		dev_err(&port->dev, "Failed set DTR = %s in R_C4: %d\n",
+		dev_err(&port->dev, "Failed to set DTR = %s in R_C4: %d\n",
 			str_on_off(dtr), ret);
 		return ret;
 	}
