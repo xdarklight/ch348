@@ -228,6 +228,9 @@ static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
 	unsigned int tx_bytes;
 	int ret;
 
+	if (READ_ONCE(port->serial->suspend_count))
+		return 0;
+
 	if (test_and_set_bit_lock(USB_SERIAL_WRITE_BUSY, &port->flags))
 		return 0;
 
@@ -794,8 +797,10 @@ static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
 	unsigned int i;
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
-		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT)
+		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT) {
+			usb_kill_urb(serial->port[i]->write_urb);
 			ch348_clear_write_state(serial->port[i]);
+		}
 	}
 
 	return 0;
