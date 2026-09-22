@@ -140,7 +140,7 @@ struct ch348_config_data_init {
 	u8 format;
 	u8 paritytype;
 	u8 databits;
-	u8 rate;
+	u8 recv_tmt;
 	u8 unknown;
 } __packed;
 
@@ -589,7 +589,10 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	else
 		config.format = CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT;
 
-	config.rate = max_t(speed_t, 5, (10000 * 15 / baudrate) + 1);
+	if (baudrate >= 921600)
+		config.recv_tmt = 5;
+	else
+		config.recv_tmt = (10000 * 15 / baudrate) + 1;
 
 	ret = ch348_write_config(port->serial, CMD_WB_E | portnum, R_INIT,
 				 &config, sizeof(config));
