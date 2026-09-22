@@ -780,8 +780,15 @@ static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
 	unsigned int i;
 
 	scoped_guard(mutex, &ch348->open_ports_lock) {
-		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT)
+		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
+			return 0;
+
+		ch348_kill_read_urbs(serial);
+
+		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT) {
+			usb_kill_urb(serial->port[i]->write_urb);
 			ch348_clear_write_state(serial->port[i]);
+		}
 	}
 
 	return 0;
