@@ -157,6 +157,7 @@ struct ch348_status_entry {
 	u8 reg_iir;
 	union {
 		u8 unknown;
+		u8 reg_data[2];
 		u8 lsr;
 		u8 msr;
 		struct ch348_ven_r_msr ven_r_msr;
@@ -282,7 +283,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 	struct ch348_status_entry *status_entry;
 	enum ch348_status_action action;
 	struct usb_serial_port *port;
-	unsigned int i;
+	unsigned int i, status_len;
 	u8 portnum;
 
 	if (urb->actual_length <= CH348_STATUS_HDRSIZE) {
@@ -305,28 +306,31 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 
 		action = CH348_STATUS_ACTION_NONE;
 		port = serial->port[portnum];
-		i += CH348_STATUS_HDRSIZE;
+		status_len = CH348_STATUS_HDRSIZE;
 
 		if (status_entry->reg_iir == R_INIT) {
-			i += sizeof(status_entry->data.init_data);
+			status_len += sizeof(status_entry->data.init_data);
 		} else if (status_entry->reg_iir == VEN_R) {
-			i += sizeof(status_entry->data.ven_r_msr);
+			status_len += sizeof(status_entry->data.ven_r_msr);
+		} else if (status_entry->reg_iir >= R_MOD &&
+			   status_entry->reg_iir <= R_TM_O) {
+			status_len += sizeof(status_entry->data.reg_data);
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
-			i += sizeof(status_entry->data.lsr);
+			status_len += sizeof(status_entry->data.lsr);
 			action = CH348_STATUS_ACTION_UART_IIR_RLSI;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
-			i += sizeof(status_entry->data.unknown);
+			status_len += sizeof(status_entry->data.unknown);
 			action = CH348_STATUS_ACTION_UART_IIR_THRI;
 		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
-			i += sizeof(status_entry->data.msr);
+			status_len += sizeof(status_entry->data.msr);
 		} else {
-			i += sizeof(status_entry->data.unknown);
+			status_len += sizeof(status_entry->data.unknown);
 			dev_dbg_ratelimited(&port->dev,
 					    "Unsupported status with reg_iir 0x%02x\n",
 					    status_entry->reg_iir);
 		}
 
-		if (urb->actual_length < i) {
+		if (status_len > urb->actual_length - i) {
 			dev_dbg_ratelimited(&port->dev,
 					    "Truncated status with reg_iir 0x%02x\n",
 					    status_entry->reg_iir);
@@ -345,6 +349,8 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		} else if (action == CH348_STATUS_ACTION_UART_IIR_THRI) {
 			ch348_write_done(port);
 		}
+
+		i += status_len;
 	}
 }
 
