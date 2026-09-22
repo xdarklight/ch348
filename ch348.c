@@ -216,10 +216,10 @@ static void ch348_kill_read_urbs(struct usb_serial *serial)
 
 static void ch348_clear_write_state(struct usb_serial_port *port)
 {
-	scoped_guard(spinlock_irqsave, &port->lock)
+	scoped_guard(spinlock_irqsave, &port->lock) {
 		port->tx_bytes = 0;
-
-	clear_bit_unlock(USB_SERIAL_WRITE_BUSY, &port->flags);
+		clear_bit_unlock(USB_SERIAL_WRITE_BUSY, &port->flags);
+	}
 }
 
 static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
@@ -237,22 +237,21 @@ static int ch348_write_start(struct usb_serial_port *port, gfp_t mem_flags)
 	 * Only ingest as many bytes as we can transfer with one URB at a time
 	 * keeping the TX header in mind.
 	 */
-	tx_bytes = kfifo_out_locked(&port->write_fifo, txb->data,
-				    port->bulk_out_size - CH348_TX_HDRSIZE,
-				    &port->lock);
-	if (!tx_bytes) {
-		clear_bit_unlock(USB_SERIAL_WRITE_BUSY, &port->flags);
+	scoped_guard(spinlock_irqsave, &port->lock) {
+		tx_bytes = kfifo_out(&port->write_fifo, txb->data,
+				     port->bulk_out_size - CH348_TX_HDRSIZE);
+		if (!tx_bytes) {
+			clear_bit_unlock(USB_SERIAL_WRITE_BUSY, &port->flags);
+			return 0;
+		}
 
-		return 0;
+		port->tx_bytes += tx_bytes;
 	}
 
 	port->write_urb->transfer_buffer_length = tx_bytes + CH348_TX_HDRSIZE;
 
 	txb->port = port->port_number;
 	txb->length = cpu_to_le16(tx_bytes);
-
-	scoped_guard(spinlock_irqsave, &port->lock)
-		port->tx_bytes += tx_bytes;
 
 	usb_serial_debug_data(&port->dev, __func__,
 			      port->write_urb->transfer_buffer_length,
@@ -631,7 +630,10 @@ static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 
 static bool ch348_tx_empty(struct usb_serial_port *port)
 {
-	return !test_bit(USB_SERIAL_WRITE_BUSY, &port->flags);
+	guard(spinlock_irqsave)(&port->lock);
+
+	return kfifo_is_empty(&port->write_fifo) &&
+	       !test_bit(USB_SERIAL_WRITE_BUSY, &port->flags);
 }
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
@@ -704,9 +706,9 @@ static void ch348_close(struct usb_serial_port *port)
 	scoped_guard(spinlock_irqsave, &port->lock)
 		kfifo_reset_out(&port->write_fifo);
 
-	ch348_clear_write_state(port);
-
 	usb_kill_urb(port->write_urb);
+
+	ch348_clear_write_state(port);
 }
 
 static int ch348_detect_version(struct usb_serial *serial)
