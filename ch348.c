@@ -31,33 +31,11 @@
 
 #define CH348_CMD_TIMEOUT		2000
 
-#define CMD_W_R				0xc0
 #define CMD_W_BR			0x80
 
 #define CMD_WB_E			0x90
 
-/* R_C1 = 0x01 is UART_IER compatible */
-
-/* no official documentation available for R_C2 */
-#define R_C2				0x02
-#define R_C2_ACTIVATE			0x87
-
-/* no official documentation available for R_C3 */
-#define R_C3				0x03
-#define R_C3_BREAK_OFF			0x60
-#define R_C3_BREAK_ON			0x61
-
-/* no official documentation available for R_C4 */
-#define R_C4				0x04
-#define R_C4_DTR_OFF			0x00
-#define R_C4_DTR_ON			0x01
-#define R_C4_RTS_OFF			0x10
-#define R_C4_RTS_ON			0x11
-#define R_C4_ACTIVATE			0x08
-#define R_C4_HW_FLOW_CONTROL_OFF	0x50
-#define R_C4_HW_FLOW_CONTROL_ON		0x51
-
-#define R_C5				0x06
+#define CMD_W_R				0xc0
 
 #define VEN_R				0x85
 #define VEN_R_UPDATE_MODEM_STATUS	0x06
@@ -483,16 +461,49 @@ static int ch348_write_config(struct usb_serial *serial, u8 cmd, u8 reg,
 	return ret < 0 ? ret : 0;
 }
 
-static int ch348_port_config(struct usb_serial_port *port, u8 cmd, u8 reg,
-			     u8 control)
+static u8 ch348_port_register_offset(struct usb_serial_port *port, u8 reg)
 {
 	if (port->port_number < 4)
 		reg += 0x10 * port->port_number;
 	else
 		reg += 0x10 * (port->port_number - 4) + 0x08;
 
-	return ch348_write_config(port->serial, cmd, reg, &control,
-				  sizeof(control));
+	return reg;
+}
+
+static int ch348_port_register_write(struct usb_serial_port *port, u8 reg,
+				     u8 val)
+{
+	return ch348_write_config(port->serial, CMD_W_R,
+				  ch348_port_register_offset(port, reg), &val,
+				  sizeof(val));
+}
+
+static int ch348_port_register_update_bits(struct usb_serial_port *port,
+					   u8 reg, u8 mask, u8 val)
+{
+	u8 bit, control;
+	int ret;
+
+	for (bit = 0; bit < BITS_PER_BYTE; bit++) {
+		if (!(mask & BIT(bit)))
+			continue;
+
+		/*
+		 * CMD_W_BR encoding is:
+		 * - upper nibble: bit in the given register
+		 * - lower nibble: whether to set (1) or clear (0) the bit
+		 */
+		control = (bit << 4) | ((val & BIT(bit)) ? 1 : 0);
+
+		ret = ch348_write_config(port->serial, CMD_W_BR,
+					 ch348_port_register_offset(port, reg),
+					 &control, sizeof(control));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
@@ -515,7 +526,6 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	bool dtr, rts;
 	int ret;
 
 	/*
@@ -529,22 +539,11 @@ static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
 		return -ENOTSUPP;
 	}
 
-	dtr = !!(mcr & UART_MCR_DTR);
-	rts = !!(mcr & UART_MCR_RTS);
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4,
-				dtr ? R_C4_DTR_ON : R_C4_DTR_OFF);
+	ret = ch348_port_register_update_bits(port, UART_MCR,
+					      UART_MCR_DTR | UART_MCR_RTS, mcr);
 	if (ret) {
-		dev_err(&port->dev, "Failed to set DTR = %s in R_C4: %d\n",
-			str_on_off(dtr), ret);
-		return ret;
-	}
-
-	ret = ch348_port_config(port, CMD_W_BR, R_C4,
-				rts ? R_C4_RTS_ON : R_C4_RTS_OFF);
-	if (ret) {
-		dev_err(&port->dev, "Failed to set RTS = %s in R_C4: %d\n",
-			str_on_off(rts), ret);
+		dev_err(&port->dev, "Failed to update UART_MCR = 0x%02x: %d\n",
+			mcr, ret);
 		return ret;
 	}
 
@@ -642,11 +641,12 @@ static int ch348_break_ctl(struct tty_struct *tty, int on)
 	struct usb_serial_port *port = tty->driver_data;
 	int ret;
 
-	ret = ch348_port_config(port, CMD_W_BR, R_C3,
-				on ? R_C3_BREAK_ON : R_C3_BREAK_OFF);
+	ret = ch348_port_register_update_bits(port, UART_LCR,
+					      UART_LCR_SBC,
+					      on ? UART_LCR_SBC : 0);
 	if (ret)
-		dev_err(&port->dev, "Failed to set BREAK = %s in R_C3: %d\n",
-			str_on_off(on), ret);
+		dev_err(&port->dev, "Failed to %s UART_LCR_SBC: %d\n",
+			str_enable_disable(on), ret);
 
 	return ret;
 }
@@ -664,29 +664,36 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (ret)
 		return ret;
 
+	ret = ch348_port_register_write(port, UART_FCR, UART_FCR_TRIGGER_8 |
+							UART_FCR_CLEAR_RCVR |
+							UART_FCR_CLEAR_XMIT |
+							UART_FCR_ENABLE_FIFO);
+	if (ret) {
+		dev_err(&port->dev, "Failed to write UART_FCR: %d\n", ret);
+		goto err_put_read_urbs;
+	}
+
+	/*
+	 * The vendor driver sets UART_MCR_OUT2 unconditionally during open
+	 * (and it's not clear why, THRI is reported even without it).
+	 */
+	ret = ch348_port_register_write(port, UART_MCR, UART_MCR_OUT2);
+	if (ret) {
+		dev_err(&port->dev, "Failed to write UART_MCR: %d\n", ret);
+		goto err_put_read_urbs;
+	}
+
+	ret = ch348_port_register_write(port, UART_IER, UART_IER_RDI |
+							UART_IER_THRI |
+							UART_IER_RLSI |
+							UART_IER_MSI);
+	if (ret) {
+		dev_err(&port->dev, "Failed to write UART_IER: %d\n", ret);
+		goto err_put_read_urbs;
+	}
+
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
-
-	ret = ch348_port_config(port, CMD_W_R, R_C2, R_C2_ACTIVATE);
-	if (ret) {
-		dev_err(&port->dev, "Failed to set ACTIVATE in R_C2: %d\n",
-			ret);
-		goto err_put_read_urbs;
-	}
-
-	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
-	if (ret) {
-		dev_err(&port->dev, "Failed to set ACTIVATE in R_C4: %d\n",
-			ret);
-		goto err_put_read_urbs;
-	}
-
-	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
-				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
-	if (ret) {
-		dev_err(&port->dev, "Failed to enable interrupts: %d\n", ret);
-		goto err_put_read_urbs;
-	}
 
 	return 0;
 
@@ -699,9 +706,9 @@ static void ch348_close(struct usb_serial_port *port)
 {
 	int ret;
 
-	ret = ch348_port_config(port, CMD_W_R, UART_IER, 0);
+	ret = ch348_port_register_write(port, UART_IER, 0);
 	if (ret)
-		dev_dbg(&port->dev, "Failed to disable interrupts: %d\n", ret);
+		dev_dbg(&port->dev, "Failed to clear UART_IER: %d\n", ret);
 
 	ch348_read_urbs_put(port->serial);
 
