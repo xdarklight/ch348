@@ -38,7 +38,6 @@
 #define CMD_W_R				0xc0
 
 #define VEN_R				0x85
-#define VEN_R_UPDATE_MODEM_STATUS	0x06
 
 #define VEN_W				0x8a
 
@@ -128,9 +127,9 @@ struct ch348_config_data_init {
 #define CH348_CONFIG_DATA_INIT_FORMAT_ONE_STOPBIT	0x0
 #define CH348_CONFIG_DATA_INIT_FORMAT_TWO_STOPBITS	0x2
 
-struct ch348_ven_r_msr {
-	u8 control;
-	u8 msr;
+struct ch348_ven_r {
+	u8 reg;
+	u8 val;
 } __packed;
 
 struct ch348_status_entry {
@@ -140,7 +139,7 @@ struct ch348_status_entry {
 		u8 unknown;
 		u8 lsr;
 		u8 msr;
-		struct ch348_ven_r_msr ven_r_msr;
+		struct ch348_ven_r ven_r;
 		struct ch348_config_data_init init_data;
 	} data;
 } __packed;
@@ -318,7 +317,7 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 		if (status_entry->reg_iir == R_INIT) {
 			i += sizeof(status_entry->data.init_data);
 		} else if (status_entry->reg_iir == VEN_R) {
-			i += sizeof(status_entry->data.ven_r_msr);
+			i += sizeof(status_entry->data.ven_r);
 		} else if ((status_entry->reg_iir & (UART_IIR_ID | UART_IIR_NO_INT))) {
 			u8 iir = status_entry->reg_iir & (UART_IIR_ID | UART_IIR_NO_INT);
 
@@ -529,27 +528,33 @@ static int ch348_write(struct tty_struct *tty, struct usb_serial_port *port,
 	return count;
 }
 
-static int ch348_set_modem_control(struct usb_serial_port *port, u8 mcr)
+static bool ch348_port_has_modem_lines(struct usb_serial_port *port)
 {
 	struct ch348 *ch348 = usb_get_serial_data(port->serial);
-	int ret;
 
 	/*
 	 * Only the first four ports have the modem control pins routed outside
 	 * the CH348Q package.
 	 */
-	if (ch348->package_type == CH348Q && port->port_number >= 4) {
+	return ch348->package_type != CH348Q || port->port_number < 4;
+}
+
+static int ch348_update_mcr(struct usb_serial_port *port, u8 mask, u8 val)
+{
+	int ret;
+
+	if (!ch348_port_has_modem_lines(port)) {
 		dev_dbg(&port->dev,
-			"DTR/RTS is not supported on CH348Q port %u\n",
+			"Modem control is not supported on CH348Q port %u\n",
 			port->port_number);
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 
-	ret = ch348_port_register_update_bits(port, UART_MCR,
-					      UART_MCR_DTR | UART_MCR_RTS, mcr);
+	ret = ch348_port_register_update_bits(port, UART_MCR, mask, val);
 	if (ret) {
-		dev_err(&port->dev, "Failed to update UART_MCR = 0x%02x: %d\n",
-			mcr, ret);
+		dev_err(&port->dev,
+			"Failed to update UART_MCR (mask 0x%02x, value 0x%02x): %d\n",
+			mask, val, ret);
 		return ret;
 	}
 
@@ -564,15 +569,15 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 	int ret, portnum = port->port_number;
 	speed_t	baudrate;
 
-	/* Hardware flow control is supported by HW but not implemented yet */
-	termios->c_cflag &= ~CRTSCTS;
+	if (!ch348_port_has_modem_lines(port))
+		termios->c_cflag &= ~CRTSCTS;
 
 	if (termios_old && !tty_termios_hw_change(termios, termios_old))
 		return;
 
 	baudrate = tty_termios_baud_rate(termios);
 	if (!baudrate) {
-		ch348_set_modem_control(port, 0);
+		ch348_update_mcr(port, UART_MCR_DTR | UART_MCR_RTS, 0);
 		return;
 	}
 
@@ -637,9 +642,22 @@ static void ch348_set_termios(struct tty_struct *tty, struct usb_serial_port *po
 			ret);
 		if (termios_old)
 			tty_termios_copy_hw(termios, termios_old);
-	} else if (termios_old && (termios_old->c_cflag & CBAUD) == B0) {
-		ch348_set_modem_control(port, UART_MCR_DTR | UART_MCR_RTS);
+		return;
 	}
+
+	if (ch348_port_has_modem_lines(port)) {
+		ret = ch348_update_mcr(port, UART_MCR_AFE,
+				       C_CRTSCTS(tty) ? UART_MCR_AFE : 0);
+		if (ret) {
+			termios->c_cflag &= ~CRTSCTS;
+			if (termios_old)
+				termios->c_cflag |= termios_old->c_cflag & CRTSCTS;
+		}
+	}
+
+	if (termios_old && (termios_old->c_cflag & CBAUD) == B0)
+		ch348_update_mcr(port, UART_MCR_DTR | UART_MCR_RTS,
+				 UART_MCR_DTR | UART_MCR_RTS);
 }
 
 static int ch348_break_ctl(struct tty_struct *tty, int on)
@@ -659,7 +677,29 @@ static int ch348_break_ctl(struct tty_struct *tty, int on)
 
 static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 {
-	ch348_set_modem_control(port, on ? UART_MCR_DTR | UART_MCR_RTS : 0);
+	ch348_update_mcr(port, UART_MCR_DTR | UART_MCR_RTS,
+			 on ? UART_MCR_DTR | UART_MCR_RTS : 0);
+}
+
+/*
+ * The RX data of all ports is multiplexed into one bulk-in EP, so throttling
+ * can't stop reading from the device (as that would stall all ports).
+ * Instead signal the other side to stop sending by clearing UART_MCR_RTS.
+ */
+static void ch348_throttle(struct tty_struct *tty)
+{
+	struct usb_serial_port *port = tty->driver_data;
+
+	if (C_CRTSCTS(tty))
+		ch348_update_mcr(port, UART_MCR_RTS, 0);
+}
+
+static void ch348_unthrottle(struct tty_struct *tty)
+{
+	struct usb_serial_port *port = tty->driver_data;
+
+	if (C_CRTSCTS(tty))
+		ch348_update_mcr(port, UART_MCR_RTS, UART_MCR_RTS);
 }
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
@@ -869,6 +909,8 @@ static struct usb_serial_driver ch348_device = {
 	.close =		ch348_close,
 	.set_termios =		ch348_set_termios,
 	.break_ctl =		ch348_break_ctl,
+	.throttle =		ch348_throttle,
+	.unthrottle =		ch348_unthrottle,
 	.get_icount =		usb_serial_generic_get_icount,
 	.dtr_rts =		ch348_dtr_rts,
 	.process_read_urb =	ch348_process_read_urb,
