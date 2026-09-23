@@ -319,14 +319,20 @@ static void ch348_process_status_urb(struct usb_serial *serial, struct urb *urb)
 			i += sizeof(status_entry->data.init_data);
 		} else if (status_entry->reg_iir == VEN_R) {
 			i += sizeof(status_entry->data.ven_r_msr);
-		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_RLSI) {
-			i += sizeof(status_entry->data.lsr);
-			action = CH348_STATUS_ACTION_UART_IIR_RLSI;
-		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_THRI) {
-			i += sizeof(status_entry->data.unknown);
-			action = CH348_STATUS_ACTION_UART_IIR_THRI;
-		} else if ((status_entry->reg_iir & UART_IIR_ID) == UART_IIR_MSI) {
-			i += sizeof(status_entry->data.msr);
+		} else if ((status_entry->reg_iir & (UART_IIR_ID | UART_IIR_NO_INT))) {
+			u8 iir = status_entry->reg_iir & (UART_IIR_ID | UART_IIR_NO_INT);
+
+			if (iir == UART_IIR_RLSI) {
+				i += sizeof(status_entry->data.lsr);
+				action = CH348_STATUS_ACTION_UART_IIR_RLSI;
+			} else if (iir == UART_IIR_THRI) {
+				i += sizeof(status_entry->data.unknown);
+				action = CH348_STATUS_ACTION_UART_IIR_THRI;
+			} else if (iir == UART_IIR_MSI) {
+				i += sizeof(status_entry->data.msr);
+			} else {
+				i += sizeof(status_entry->data.unknown);
+			}
 		} else {
 			i += sizeof(status_entry->data.unknown);
 			dev_dbg_ratelimited(&port->dev,
