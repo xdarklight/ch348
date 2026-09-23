@@ -11,7 +11,8 @@
  *   Copyright (C) 2025 Nanjing Qinheng Microelectronics Co., Ltd.
  */
 
-#include <linux/bitmap.h>
+#include <linux/bitops.h>
+#include <linux/cleanup.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/kfifo.h>
@@ -117,13 +118,15 @@ enum ch348_package {
 
 /**
  * struct ch348 - main container for all this driver information
- * @open_ports:		bitmap of ports that are currently opened
- * @open_ports_lock:	protect against concurrent modification of open_ports
- * @package_type:	indicates package type
+ * @read_urbs_users:		number of users (serial ports, GPIOs, ...)
+ *				which require the read URBs (STATUS/INT and RX)
+ * @read_urbs_lock:		protect against concurrent modification of
+ *				read_urbs_users
+ * @package_type:		indicates package type
  */
 struct ch348 {
-	DECLARE_BITMAP(open_ports, CH348_MAXPORT);
-	struct mutex open_ports_lock;
+	unsigned int read_urbs_users;
+	struct mutex read_urbs_lock;
 
 	enum ch348_package package_type;
 };
@@ -211,6 +214,34 @@ static void ch348_kill_read_urbs(struct usb_serial *serial)
 {
 	ch348_kill_port_read_urbs(serial->port[CH348_PORTNUM_STATUS_INT]);
 	ch348_kill_port_read_urbs(serial->port[CH348_PORTNUM_SERIAL_RX]);
+}
+
+static int ch348_read_urbs_get(struct usb_serial *serial, gfp_t mem_flags)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+	int ret;
+
+	guard(mutex)(&ch348->read_urbs_lock);
+
+	if (!ch348->read_urbs_users) {
+		ret = ch348_submit_read_urbs(serial, mem_flags);
+		if (ret)
+			return ret;
+	}
+
+	ch348->read_urbs_users++;
+
+	return 0;
+}
+
+static void ch348_read_urbs_put(struct usb_serial *serial)
+{
+	struct ch348 *ch348 = usb_get_serial_data(serial);
+
+	guard(mutex)(&ch348->read_urbs_lock);
+
+	if (!--ch348->read_urbs_users)
+		ch348_kill_read_urbs(serial);
 }
 
 static void ch348_clear_write_state(struct usb_serial_port *port)
@@ -627,18 +658,11 @@ static void ch348_dtr_rts(struct usb_serial_port *port, int on)
 
 static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	int ret;
 
-	scoped_guard(mutex, &ch348->open_ports_lock) {
-		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT)) {
-			ret = ch348_submit_read_urbs(port->serial, GFP_KERNEL);
-			if (ret)
-				return ret;
-		}
-
-		set_bit(port->port_number, ch348->open_ports);
-	}
+	ret = ch348_read_urbs_get(port->serial, GFP_KERNEL);
+	if (ret)
+		return ret;
 
 	if (tty)
 		ch348_set_termios(tty, port, NULL);
@@ -647,50 +671,39 @@ static int ch348_open(struct tty_struct *tty, struct usb_serial_port *port)
 	if (ret) {
 		dev_err(&port->dev, "Failed to set ACTIVATE in R_C2: %d\n",
 			ret);
-		goto err_kill_read_urbs;
+		goto err_put_read_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, R_C4, R_C4_ACTIVATE);
 	if (ret) {
 		dev_err(&port->dev, "Failed to set ACTIVATE in R_C4: %d\n",
 			ret);
-		goto err_kill_read_urbs;
+		goto err_put_read_urbs;
 	}
 
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, UART_IER_RDI |
 				UART_IER_THRI | UART_IER_RLSI | UART_IER_MSI);
 	if (ret) {
 		dev_err(&port->dev, "Failed to enable interrupts: %d\n", ret);
-		goto err_kill_read_urbs;
+		goto err_put_read_urbs;
 	}
 
 	return 0;
 
-err_kill_read_urbs:
-	scoped_guard(mutex, &ch348->open_ports_lock) {
-		clear_bit(port->port_number, ch348->open_ports);
-
-		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
-			ch348_kill_read_urbs(port->serial);
-	}
+err_put_read_urbs:
+	ch348_read_urbs_put(port->serial);
 	return ret;
 }
 
 static void ch348_close(struct usb_serial_port *port)
 {
-	struct ch348 *ch348 = usb_get_serial_data(port->serial);
 	int ret;
 
 	ret = ch348_port_config(port, CMD_W_R, UART_IER, 0);
 	if (ret)
 		dev_dbg(&port->dev, "Failed to disable interrupts: %d\n", ret);
 
-	scoped_guard(mutex, &ch348->open_ports_lock) {
-		clear_bit(port->port_number, ch348->open_ports);
-
-		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
-			ch348_kill_read_urbs(port->serial);
-	}
+	ch348_read_urbs_put(port->serial);
 
 	scoped_guard(spinlock_irqsave, &port->lock)
 		kfifo_reset_out(&port->write_fifo);
@@ -734,7 +747,7 @@ static int ch348_attach(struct usb_serial *serial)
 
 	usb_set_serial_data(serial, ch348);
 
-	mutex_init(&ch348->open_ports_lock);
+	mutex_init(&ch348->read_urbs_lock);
 
 	ret = ch348_detect_version(serial);
 	if (ret)
@@ -751,7 +764,7 @@ static void ch348_release(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 
-	mutex_destroy(&ch348->open_ports_lock);
+	mutex_destroy(&ch348->read_urbs_lock);
 
 	kfree(ch348);
 }
@@ -782,16 +795,14 @@ static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
 	struct ch348 *ch348 = usb_get_serial_data(serial);
 	unsigned int i;
 
-	scoped_guard(mutex, &ch348->open_ports_lock) {
-		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
-			return 0;
+	scoped_guard(mutex, &ch348->read_urbs_lock) {
+		if (ch348->read_urbs_users)
+			ch348_kill_read_urbs(serial);
+	}
 
-		ch348_kill_read_urbs(serial);
-
-		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT) {
-			usb_kill_urb(serial->port[i]->write_urb);
-			ch348_clear_write_state(serial->port[i]);
-		}
+	for (i = 0; i < CH348_MAXPORT; i++) {
+		usb_kill_urb(serial->port[i]->write_urb);
+		ch348_clear_write_state(serial->port[i]);
 	}
 
 	return 0;
@@ -800,25 +811,28 @@ static int ch348_suspend(struct usb_serial *serial, pm_message_t message)
 static int ch348_resume(struct usb_serial *serial)
 {
 	struct ch348 *ch348 = usb_get_serial_data(serial);
+	bool write_start_err = false;
 	unsigned int i;
 	int ret;
 
-	scoped_guard(mutex, &ch348->open_ports_lock) {
-		if (bitmap_empty(ch348->open_ports, CH348_MAXPORT))
-			return 0;
-
-		ret = ch348_submit_read_urbs(serial, GFP_NOIO);
-		if (ret)
-			return ret;
-
-		for_each_set_bit(i, ch348->open_ports, CH348_MAXPORT) {
-			ret = ch348_write_start(serial->port[i], GFP_NOIO);
+	scoped_guard(mutex, &ch348->read_urbs_lock) {
+		if (ch348->read_urbs_users) {
+			ret = ch348_submit_read_urbs(serial, GFP_NOIO);
 			if (ret)
 				return ret;
 		}
 	}
 
-	return 0;
+	for (i = 0; i < CH348_MAXPORT; i++) {
+		if (!tty_port_initialized(&serial->port[i]->port))
+			continue;
+
+		ret = ch348_write_start(serial->port[i], GFP_NOIO);
+		if (ret)
+			write_start_err = true;
+	}
+
+	return write_start_err ? -EIO : 0;
 }
 
 static const struct usb_device_id ch348_ids[] = {
